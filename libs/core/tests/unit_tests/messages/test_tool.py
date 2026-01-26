@@ -1,0 +1,646 @@
+"""Tests for langchain_core.messages.tool module."""
+
+import json
+from uuid import UUID
+
+import pytest
+
+from langchain_core.load import dumpd, load
+from langchain_core.messages.tool import (
+    ToolMessage,
+    ToolMessageChunk,
+    ToolCall,
+    ToolCallChunk,
+    ToolOutputMixin,
+    tool_call,
+    tool_call_chunk,
+    invalid_tool_call,
+    default_tool_parser,
+    default_tool_chunk_parser,
+)
+
+
+class TestToolMessage:
+    """Tests for the ToolMessage class."""
+
+    def test_init_basic(self) -> None:
+        """Test basic ToolMessage initialization."""
+        msg = ToolMessage(content="Result: 42", tool_call_id="call-123")
+        assert msg.content == "Result: 42"
+        assert msg.tool_call_id == "call-123"
+        assert msg.type == "tool"
+        assert msg.status == "success"
+
+    def test_init_with_name(self) -> None:
+        """Test ToolMessage with name."""
+        msg = ToolMessage(content="Result", tool_call_id="call-123", name="calculator")
+        assert msg.name == "calculator"
+
+    def test_init_with_id(self) -> None:
+        """Test ToolMessage with ID."""
+        msg = ToolMessage(content="Result", tool_call_id="call-123", id="msg-123")
+        assert msg.id == "msg-123"
+
+    def test_init_with_artifact(self) -> None:
+        """Test ToolMessage with artifact."""
+        artifact = {"image": "base64_data", "metadata": {"width": 100}}
+        msg = ToolMessage(content="Image generated", tool_call_id="call-123", artifact=artifact)
+        assert msg.artifact == artifact
+
+    def test_init_with_status_success(self) -> None:
+        """Test ToolMessage with success status."""
+        msg = ToolMessage(content="Result", tool_call_id="call-123", status="success")
+        assert msg.status == "success"
+
+    def test_init_with_status_error(self) -> None:
+        """Test ToolMessage with error status."""
+        msg = ToolMessage(content="Error: Division by zero", tool_call_id="call-123", status="error")
+        assert msg.status == "error"
+
+    def test_init_with_list_content(self) -> None:
+        """Test ToolMessage with list content."""
+        content = [{"type": "text", "text": "Result"}]
+        msg = ToolMessage(content=content, tool_call_id="call-123")
+        assert msg.content == content
+
+    def test_init_with_content_blocks(self) -> None:
+        """Test ToolMessage with content_blocks parameter."""
+        blocks = [
+            {"type": "text", "text": "Result: 42"},
+            {"type": "text", "text": "Calculation complete"},
+        ]
+        msg = ToolMessage(content_blocks=blocks, tool_call_id="call-123")
+        assert msg.content == blocks
+
+    def test_tool_call_id_is_required(self) -> None:
+        """Test that tool_call_id is required."""
+        with pytest.raises(Exception):  # Pydantic validation error
+            ToolMessage(content="Result")  # type: ignore[call-arg]
+
+    def test_tool_call_id_coerced_to_string(self) -> None:
+        """Test that tool_call_id is coerced to string."""
+        # UUID type
+        msg1 = ToolMessage(content="Result", tool_call_id=UUID("12345678-1234-5678-1234-567812345678"))
+        assert isinstance(msg1.tool_call_id, str)
+
+        # Integer type
+        msg2 = ToolMessage(content="Result", tool_call_id=12345)
+        assert msg2.tool_call_id == "12345"
+
+        # Float type
+        msg3 = ToolMessage(content="Result", tool_call_id=123.45)
+        assert msg3.tool_call_id == "123.45"
+
+    def test_type_is_tool(self) -> None:
+        """Test that ToolMessage type is 'tool'."""
+        msg = ToolMessage(content="Test", tool_call_id="call-123")
+        assert msg.type == "tool"
+
+    def test_serialization_roundtrip(self) -> None:
+        """Test ToolMessage serialization and deserialization."""
+        msg = ToolMessage(
+            content="Result: 42",
+            tool_call_id="call-123",
+            name="calculator",
+            id="msg-123",
+            artifact={"data": "value"},
+            status="success",
+        )
+        dumped = dumpd(msg)
+        assert dumped["type"] == "constructor"
+        assert dumped["id"] == ["langchain", "schema", "messages", "ToolMessage"]
+
+        loaded = load(dumped)
+        assert isinstance(loaded, ToolMessage)
+        assert loaded.content == "Result: 42"
+        assert loaded.tool_call_id == "call-123"
+        assert loaded.name == "calculator"
+        assert loaded.id == "msg-123"
+        assert loaded.artifact == {"data": "value"}
+        assert loaded.status == "success"
+
+    def test_text_property(self) -> None:
+        """Test the .text property."""
+        msg = ToolMessage(content="Hello world", tool_call_id="call-123")
+        assert msg.text == "Hello world"
+
+    def test_text_property_list_content(self) -> None:
+        """Test .text property with list content."""
+        msg = ToolMessage(
+            content=[{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}],
+            tool_call_id="call-123",
+        )
+        assert msg.text == "Part 1Part 2"
+
+    def test_content_blocks_property(self) -> None:
+        """Test the content_blocks property."""
+        msg = ToolMessage(content="Result", tool_call_id="call-123")
+        blocks = msg.content_blocks
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "text"
+        assert blocks[0]["text"] == "Result"
+
+    def test_pretty_repr(self) -> None:
+        """Test pretty_repr output."""
+        msg = ToolMessage(content="Result", tool_call_id="call-123", name="calculator")
+        result = msg.pretty_repr()
+        assert "Tool Message" in result
+        assert "Result" in result
+
+    def test_content_coercion_non_string(self) -> None:
+        """Test that non-string/non-list content is coerced to string."""
+        msg = ToolMessage(content=42, tool_call_id="call-123")  # type: ignore[arg-type]
+        assert msg.content == "42"
+
+    def test_content_coercion_list_with_non_dict(self) -> None:
+        """Test that list content with non-dict items is coerced."""
+        msg = ToolMessage(content=[123, 456], tool_call_id="call-123")  # type: ignore[list-item]
+        assert msg.content == ["123", "456"]
+
+    def test_content_coercion_tuple_to_list(self) -> None:
+        """Test that tuple content is converted to list."""
+        msg = ToolMessage(content=("a", "b"), tool_call_id="call-123")  # type: ignore[arg-type]
+        assert msg.content == ["a", "b"]
+
+
+class TestToolMessageChunk:
+    """Tests for the ToolMessageChunk class."""
+
+    def test_init_basic(self) -> None:
+        """Test basic ToolMessageChunk initialization."""
+        chunk = ToolMessageChunk(content="Result", tool_call_id="call-123")
+        assert chunk.content == "Result"
+        assert chunk.tool_call_id == "call-123"
+        assert chunk.type == "ToolMessageChunk"
+
+    def test_type_is_tool_message_chunk(self) -> None:
+        """Test that ToolMessageChunk type is 'ToolMessageChunk'."""
+        chunk = ToolMessageChunk(content="Test", tool_call_id="call-123")
+        assert chunk.type == "ToolMessageChunk"
+
+    def test_add_same_tool_call_id_chunks(self) -> None:
+        """Test adding ToolMessageChunks with the same tool_call_id."""
+        chunk1 = ToolMessageChunk(content="Hello", tool_call_id="call-123", id="1")
+        chunk2 = ToolMessageChunk(content=" world", tool_call_id="call-123")
+        result = chunk1 + chunk2
+        assert isinstance(result, ToolMessageChunk)
+        assert result.content == "Hello world"
+        assert result.tool_call_id == "call-123"
+        assert result.id == "1"
+
+    def test_add_different_tool_call_id_raises_error(self) -> None:
+        """Test that adding chunks with different tool_call_ids raises ValueError."""
+        chunk1 = ToolMessageChunk(content="Hello", tool_call_id="call-123")
+        chunk2 = ToolMessageChunk(content=" world", tool_call_id="call-456")
+        with pytest.raises(ValueError, match="Cannot concatenate.*different names"):
+            chunk1 + chunk2
+
+    def test_add_with_artifact(self) -> None:
+        """Test adding chunks with artifacts."""
+        chunk1 = ToolMessageChunk(
+            content="Part 1",
+            tool_call_id="call-123",
+            artifact={"data": "value1"},
+        )
+        chunk2 = ToolMessageChunk(
+            content=" Part 2",
+            tool_call_id="call-123",
+            artifact={"more": "value2"},
+        )
+        result = chunk1 + chunk2
+        # Artifacts are merged
+        assert result.artifact is not None
+
+    def test_add_with_different_status(self) -> None:
+        """Test adding chunks with different statuses."""
+        chunk1 = ToolMessageChunk(
+            content="Part 1",
+            tool_call_id="call-123",
+            status="success",
+        )
+        chunk2 = ToolMessageChunk(
+            content=" Part 2",
+            tool_call_id="call-123",
+            status="error",
+        )
+        result = chunk1 + chunk2
+        # Error status takes precedence
+        assert result.status == "error"
+
+    def test_add_with_response_metadata(self) -> None:
+        """Test adding chunks with response_metadata."""
+        chunk1 = ToolMessageChunk(
+            content="Hello",
+            tool_call_id="call-123",
+            response_metadata={"meta1": "data1"},
+        )
+        chunk2 = ToolMessageChunk(
+            content=" world",
+            tool_call_id="call-123",
+            response_metadata={"meta2": "data2"},
+        )
+        result = chunk1 + chunk2
+        assert result.response_metadata["meta1"] == "data1"
+        assert result.response_metadata["meta2"] == "data2"
+
+    def test_add_with_list_content(self) -> None:
+        """Test adding chunks with list content.
+
+        Note: Without an 'index' key, list items are appended, not merged.
+        """
+        chunk1 = ToolMessageChunk(
+            content=[{"type": "text", "text": "Hello"}],
+            tool_call_id="call-123",
+        )
+        chunk2 = ToolMessageChunk(
+            content=[{"type": "text", "text": " world"}],
+            tool_call_id="call-123",
+        )
+        result = chunk1 + chunk2
+        assert isinstance(result.content, list)
+        # Items without 'index' key are appended, not merged
+        assert len(result.content) == 2
+        assert result.content[0]["text"] == "Hello"
+        assert result.content[1]["text"] == " world"
+
+    def test_add_with_list_content_with_index(self) -> None:
+        """Test adding chunks with list content that have matching index keys."""
+        chunk1 = ToolMessageChunk(
+            content=[{"type": "text", "text": "Hello", "index": 0}],
+            tool_call_id="call-123",
+        )
+        chunk2 = ToolMessageChunk(
+            content=[{"type": "text", "text": " world", "index": 0}],
+            tool_call_id="call-123",
+        )
+        result = chunk1 + chunk2
+        assert isinstance(result.content, list)
+        # Items with same 'index' key are merged
+        assert len(result.content) == 1
+        assert result.content[0]["text"] == "Hello world"
+        assert result.content[0]["index"] == 0
+
+    def test_serialization_roundtrip(self) -> None:
+        """Test ToolMessageChunk serialization and deserialization."""
+        chunk = ToolMessageChunk(
+            content="Result",
+            tool_call_id="call-123",
+            id="chunk-123",
+        )
+        dumped = dumpd(chunk)
+        assert dumped["type"] == "constructor"
+        assert dumped["id"] == ["langchain", "schema", "messages", "ToolMessageChunk"]
+
+        loaded = load(dumped)
+        assert isinstance(loaded, ToolMessageChunk)
+        assert loaded.content == "Result"
+        assert loaded.tool_call_id == "call-123"
+        assert loaded.id == "chunk-123"
+
+    def test_add_incompatible_type_raises_error(self) -> None:
+        """Test that adding incompatible types raises TypeError."""
+        chunk = ToolMessageChunk(content="Hello", tool_call_id="call-123")
+        with pytest.raises(TypeError):
+            chunk + "not a chunk"
+
+
+class TestToolCallFactory:
+    """Tests for the tool_call factory function."""
+
+    def test_basic_tool_call(self) -> None:
+        """Test creating a basic tool call."""
+        tc = tool_call(name="test_tool", args={"param": "value"}, id="call-123")
+        assert tc["name"] == "test_tool"
+        assert tc["args"] == {"param": "value"}
+        assert tc["id"] == "call-123"
+        assert tc["type"] == "tool_call"
+
+    def test_tool_call_with_none_id(self) -> None:
+        """Test creating a tool call with None id."""
+        tc = tool_call(name="test_tool", args={}, id=None)
+        assert tc["id"] is None
+        assert tc["type"] == "tool_call"
+
+    def test_tool_call_with_empty_args(self) -> None:
+        """Test creating a tool call with empty args."""
+        tc = tool_call(name="test_tool", args={}, id="call-123")
+        assert tc["args"] == {}
+
+    def test_tool_call_with_complex_args(self) -> None:
+        """Test creating a tool call with complex args."""
+        complex_args = {
+            "string": "value",
+            "number": 42,
+            "nested": {"key": "value"},
+            "list": [1, 2, 3],
+        }
+        tc = tool_call(name="test_tool", args=complex_args, id="call-123")
+        assert tc["args"] == complex_args
+
+
+class TestToolCallChunkFactory:
+    """Tests for the tool_call_chunk factory function."""
+
+    def test_basic_tool_call_chunk(self) -> None:
+        """Test creating a basic tool call chunk."""
+        tc = tool_call_chunk(name="test_tool", args='{"param": "value"}', id="call-123", index=0)
+        assert tc["name"] == "test_tool"
+        assert tc["args"] == '{"param": "value"}'
+        assert tc["id"] == "call-123"
+        assert tc["index"] == 0
+        assert tc["type"] == "tool_call_chunk"
+
+    def test_tool_call_chunk_with_none_values(self) -> None:
+        """Test creating a tool call chunk with None values."""
+        tc = tool_call_chunk(name=None, args=None, id=None, index=None)
+        assert tc["name"] is None
+        assert tc["args"] is None
+        assert tc["id"] is None
+        assert tc["index"] is None
+        assert tc["type"] == "tool_call_chunk"
+
+    def test_tool_call_chunk_defaults(self) -> None:
+        """Test tool call chunk with default values."""
+        tc = tool_call_chunk()
+        assert tc["name"] is None
+        assert tc["args"] is None
+        assert tc["id"] is None
+        assert tc["index"] is None
+        assert tc["type"] == "tool_call_chunk"
+
+    def test_tool_call_chunk_partial_args(self) -> None:
+        """Test tool call chunk with partial JSON args (for streaming)."""
+        tc1 = tool_call_chunk(name="test", args='{"key":', id="123", index=0)
+        tc2 = tool_call_chunk(name=None, args='"value"}', id=None, index=0)
+        assert tc1["args"] == '{"key":'
+        assert tc2["args"] == '"value"}'
+
+
+class TestInvalidToolCallFactory:
+    """Tests for the invalid_tool_call factory function."""
+
+    def test_basic_invalid_tool_call(self) -> None:
+        """Test creating a basic invalid tool call."""
+        itc = invalid_tool_call(
+            name="test_tool",
+            args="invalid json",
+            id="call-123",
+            error="JSON parse error",
+        )
+        assert itc["name"] == "test_tool"
+        assert itc["args"] == "invalid json"
+        assert itc["id"] == "call-123"
+        assert itc["error"] == "JSON parse error"
+        assert itc["type"] == "invalid_tool_call"
+
+    def test_invalid_tool_call_with_none_values(self) -> None:
+        """Test creating an invalid tool call with None values."""
+        itc = invalid_tool_call(name=None, args=None, id=None, error=None)
+        assert itc["name"] is None
+        assert itc["args"] is None
+        assert itc["id"] is None
+        assert itc["error"] is None
+        assert itc["type"] == "invalid_tool_call"
+
+    def test_invalid_tool_call_defaults(self) -> None:
+        """Test invalid tool call with default values."""
+        itc = invalid_tool_call()
+        assert itc["name"] is None
+        assert itc["args"] is None
+        assert itc["id"] is None
+        assert itc["error"] is None
+
+
+class TestDefaultToolParser:
+    """Tests for the default_tool_parser function."""
+
+    def test_parse_valid_tool_calls(self) -> None:
+        """Test parsing valid tool calls."""
+        raw_calls = [
+            {
+                "id": "call-1",
+                "function": {
+                    "name": "calculator",
+                    "arguments": '{"operation": "add", "a": 1, "b": 2}',
+                },
+            },
+            {
+                "id": "call-2",
+                "function": {
+                    "name": "search",
+                    "arguments": '{"query": "weather"}',
+                },
+            },
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+
+        assert len(tool_calls) == 2
+        assert len(invalid_calls) == 0
+
+        assert tool_calls[0]["name"] == "calculator"
+        assert tool_calls[0]["args"] == {"operation": "add", "a": 1, "b": 2}
+        assert tool_calls[0]["id"] == "call-1"
+
+        assert tool_calls[1]["name"] == "search"
+        assert tool_calls[1]["args"] == {"query": "weather"}
+
+    def test_parse_invalid_json_args(self) -> None:
+        """Test parsing tool calls with invalid JSON arguments."""
+        raw_calls = [
+            {
+                "id": "call-1",
+                "function": {
+                    "name": "test_tool",
+                    "arguments": "not valid json",
+                },
+            },
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+
+        assert len(tool_calls) == 0
+        assert len(invalid_calls) == 1
+
+        assert invalid_calls[0]["name"] == "test_tool"
+        assert invalid_calls[0]["args"] == "not valid json"
+        assert invalid_calls[0]["id"] == "call-1"
+
+    def test_parse_empty_args(self) -> None:
+        """Test parsing tool calls with empty arguments."""
+        raw_calls = [
+            {
+                "id": "call-1",
+                "function": {
+                    "name": "no_args_tool",
+                    "arguments": "{}",
+                },
+            },
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["args"] == {}
+
+    def test_parse_without_function_key(self) -> None:
+        """Test parsing raw calls without function key."""
+        raw_calls = [
+            {"id": "call-1", "other": "data"},
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+
+        assert len(tool_calls) == 0
+        assert len(invalid_calls) == 0
+
+    def test_parse_empty_list(self) -> None:
+        """Test parsing empty list."""
+        tool_calls, invalid_calls = default_tool_parser([])
+        assert len(tool_calls) == 0
+        assert len(invalid_calls) == 0
+
+    def test_parse_mixed_valid_and_invalid(self) -> None:
+        """Test parsing a mix of valid and invalid tool calls."""
+        raw_calls = [
+            {
+                "id": "call-1",
+                "function": {
+                    "name": "valid_tool",
+                    "arguments": '{"key": "value"}',
+                },
+            },
+            {
+                "id": "call-2",
+                "function": {
+                    "name": "invalid_tool",
+                    "arguments": "broken json {",
+                },
+            },
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+
+        assert len(tool_calls) == 1
+        assert len(invalid_calls) == 1
+
+        assert tool_calls[0]["name"] == "valid_tool"
+        assert invalid_calls[0]["name"] == "invalid_tool"
+
+
+class TestDefaultToolChunkParser:
+    """Tests for the default_tool_chunk_parser function."""
+
+    def test_parse_tool_call_chunks(self) -> None:
+        """Test parsing tool call chunks."""
+        raw_calls = [
+            {
+                "id": "call-1",
+                "index": 0,
+                "function": {
+                    "name": "test_tool",
+                    "arguments": '{"key":',
+                },
+            },
+            {
+                "id": "call-1",
+                "index": 0,
+                "function": {
+                    "name": None,
+                    "arguments": '"value"}',
+                },
+            },
+        ]
+        chunks = default_tool_chunk_parser(raw_calls)
+
+        assert len(chunks) == 2
+        assert chunks[0]["name"] == "test_tool"
+        assert chunks[0]["args"] == '{"key":'
+        assert chunks[0]["index"] == 0
+
+        assert chunks[1]["args"] == '"value"}'
+
+    def test_parse_without_function_key(self) -> None:
+        """Test parsing chunks without function key."""
+        raw_calls = [
+            {"id": "call-1", "index": 0},
+        ]
+        chunks = default_tool_chunk_parser(raw_calls)
+
+        assert len(chunks) == 1
+        assert chunks[0]["name"] is None
+        assert chunks[0]["args"] is None
+        assert chunks[0]["id"] == "call-1"
+        assert chunks[0]["index"] == 0
+
+    def test_parse_empty_list(self) -> None:
+        """Test parsing empty list."""
+        chunks = default_tool_chunk_parser([])
+        assert len(chunks) == 0
+
+
+class TestToolOutputMixin:
+    """Tests for the ToolOutputMixin class."""
+
+    def test_tool_message_is_tool_output_mixin(self) -> None:
+        """Test that ToolMessage is an instance of ToolOutputMixin."""
+        msg = ToolMessage(content="Result", tool_call_id="call-123")
+        assert isinstance(msg, ToolOutputMixin)
+
+    def test_custom_class_with_mixin(self) -> None:
+        """Test that custom classes can use ToolOutputMixin."""
+        class CustomToolOutput(ToolOutputMixin):
+            def __init__(self, result: str) -> None:
+                self.result = result
+
+        output = CustomToolOutput(result="42")
+        assert isinstance(output, ToolOutputMixin)
+        assert output.result == "42"
+
+
+class TestToolCallTypedDict:
+    """Tests for the ToolCall TypedDict structure."""
+
+    def test_tool_call_structure(self) -> None:
+        """Test ToolCall TypedDict structure."""
+        tc: ToolCall = {
+            "name": "test_tool",
+            "args": {"param": "value"},
+            "id": "call-123",
+        }
+        assert tc["name"] == "test_tool"
+        assert tc["args"]["param"] == "value"
+        assert tc["id"] == "call-123"
+
+    def test_tool_call_with_type(self) -> None:
+        """Test ToolCall with type field."""
+        tc: ToolCall = {
+            "name": "test_tool",
+            "args": {},
+            "id": "call-123",
+            "type": "tool_call",
+        }
+        assert tc["type"] == "tool_call"
+
+
+class TestToolCallChunkTypedDict:
+    """Tests for the ToolCallChunk TypedDict structure."""
+
+    def test_tool_call_chunk_structure(self) -> None:
+        """Test ToolCallChunk TypedDict structure."""
+        tc: ToolCallChunk = {
+            "name": "test_tool",
+            "args": '{"key": "value"}',
+            "id": "call-123",
+            "index": 0,
+        }
+        assert tc["name"] == "test_tool"
+        assert tc["args"] == '{"key": "value"}'
+        assert tc["id"] == "call-123"
+        assert tc["index"] == 0
+
+    def test_tool_call_chunk_with_type(self) -> None:
+        """Test ToolCallChunk with type field."""
+        tc: ToolCallChunk = {
+            "name": None,
+            "args": None,
+            "id": None,
+            "index": None,
+            "type": "tool_call_chunk",
+        }
+        assert tc["type"] == "tool_call_chunk"
