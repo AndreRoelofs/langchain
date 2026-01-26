@@ -87,7 +87,11 @@ class TestBaseDocumentCompressor:
                 callbacks: Callbacks | None = None,
             ) -> Sequence[Document]:
                 """Keep documents containing query terms."""
-                return [doc for doc in documents if query.lower() in doc.page_content.lower()]
+                return [
+                    doc
+                    for doc in documents
+                    if query.lower() in doc.page_content.lower()
+                ]
 
         compressor = QueryAwareCompressor()
         docs = [
@@ -194,7 +198,8 @@ class TestBaseDocumentCompressor:
                 callbacks: Callbacks | None = None,
             ) -> Sequence[Document]:
                 """Sync version - should not be called."""
-                raise RuntimeError("Sync method should not be called")
+                msg = "Sync method should not be called"
+                raise RuntimeError(msg)
 
             @override
             async def acompress_documents(

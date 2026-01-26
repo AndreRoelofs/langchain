@@ -260,7 +260,8 @@ class TestBaseDocumentTransformer:
                 self, documents: Sequence[Document], **kwargs: Any
             ) -> Sequence[Document]:
                 """Sync version - should not be called."""
-                raise RuntimeError("Sync method should not be called")
+                msg = "Sync method should not be called"
+                raise RuntimeError(msg)
 
             @override
             async def atransform_documents(

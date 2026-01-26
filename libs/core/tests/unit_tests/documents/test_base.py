@@ -1,6 +1,5 @@
 """Unit tests for BaseMedia and Blob classes."""
 
-import tempfile
 from io import BufferedReader, BytesIO
 from pathlib import Path
 
@@ -19,7 +18,6 @@ class TestBaseMedia:
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
 
-            pass
 
         media = TestMedia()
         assert media.id is None
@@ -31,7 +29,6 @@ class TestBaseMedia:
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
 
-            pass
 
         media = TestMedia(id="test-id-123")
         assert media.id == "test-id-123"
@@ -42,7 +39,6 @@ class TestBaseMedia:
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
 
-            pass
 
         media = TestMedia(id=123)
         assert media.id == "123"
@@ -54,7 +50,6 @@ class TestBaseMedia:
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
 
-            pass
 
         metadata = {"source": "test", "page": 1, "author": "Test Author"}
         media = TestMedia(metadata=metadata)
@@ -189,7 +184,7 @@ class TestBlobAsString:
 
     def test_as_string_bytes_with_custom_encoding(self) -> None:
         """Test decoding bytes with custom encoding."""
-        data = "Café".encode("utf-8")
+        data = "Café".encode()
         blob = Blob.from_data(data, encoding="utf-8")
         assert blob.as_string() == "Café"
 
@@ -220,7 +215,7 @@ class TestBlobAsBytes:
     def test_as_bytes_with_encoding(self) -> None:
         """Test encoding string to bytes with custom encoding."""
         blob = Blob.from_data("Café", encoding="utf-8")
-        assert blob.as_bytes() == "Café".encode("utf-8")
+        assert blob.as_bytes() == "Café".encode()
 
 
 class TestBlobAsBytesIO:
@@ -253,9 +248,11 @@ class TestBlobAsBytesIO:
         """Test that string data raises NotImplementedError."""
         blob = Blob.from_data("String data")
 
-        with pytest.raises(NotImplementedError, match="Unable to convert blob"):
-            with blob.as_bytes_io():
-                pass
+        with (
+            pytest.raises(NotImplementedError, match="Unable to convert blob"),
+            blob.as_bytes_io(),
+        ):
+            pass
 
 
 class TestBlobSource:
@@ -326,7 +323,8 @@ class TestBlobImmutability:
         """Test that Blob fields cannot be modified after creation."""
         blob = Blob.from_data("test")
 
-        with pytest.raises(Exception):  # Pydantic ValidationError
+        # Blob is frozen so attempting to modify raises ValidationError
+        with pytest.raises(ValueError, match="frozen"):
             blob.data = "new data"  # type: ignore[misc]
 
 
