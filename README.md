@@ -1,3 +1,5 @@
+# This project is a fork of LangChain that contains additional tests and validations of the codebase for the purposes of rewriting this library into Rust. The Rust equivalent is called [Agent-Chain](https://github.com/eurora-labs/eurora/tree/main/crates/common/agent-chain) and is currently work in progress.
+
 <div align="center">
   <a href="https://www.langchain.com/">
     <picture>
