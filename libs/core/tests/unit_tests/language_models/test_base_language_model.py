@@ -111,9 +111,7 @@ class TestGetTokenizer:
 
     def test_get_tokenizer_without_transformers(self) -> None:
         """Test get_tokenizer raises ImportError when transformers not installed."""
-        with patch(
-            "langchain_core.language_models.base._HAS_TRANSFORMERS", False
-        ):
+        with patch("langchain_core.language_models.base._HAS_TRANSFORMERS", False):
             # Clear the cache to force re-evaluation
             get_tokenizer.cache_clear()
             with pytest.raises(ImportError) as exc_info:
@@ -418,3 +416,461 @@ class TestBaseLanguageModelSerialization:
         model = ConcreteLanguageModel(custom_get_token_ids=lambda x: [1])
         model_dict = model.model_dump()
         assert "custom_get_token_ids" not in model_dict
+
+
+class TestGetTokenIdsDefaultFallback:
+    """Tests for get_token_ids falling back to _get_token_ids_default_method."""
+
+    def test_get_token_ids_calls_default_method_when_no_custom(self) -> None:
+        """Test get_token_ids calls _get_token_ids_default_method when no custom
+        tokenizer is set."""
+        model = ConcreteLanguageModel()
+        assert model.custom_get_token_ids is None
+
+        with patch(
+            "langchain_core.language_models.base._get_token_ids_default_method",
+            return_value=[100, 200, 300],
+        ) as mock_default:
+            result = model.get_token_ids("hello world")
+            mock_default.assert_called_once_with("hello world")
+            assert result == [100, 200, 300]
+
+    def test_get_token_ids_does_not_call_default_when_custom_set(self) -> None:
+        """Test get_token_ids does not call _get_token_ids_default_method when
+        custom tokenizer is set."""
+
+        def custom_fn(text: str) -> list[int]:
+            return [42]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_fn)
+
+        with patch(
+            "langchain_core.language_models.base._get_token_ids_default_method",
+        ) as mock_default:
+            result = model.get_token_ids("test")
+            mock_default.assert_not_called()
+            assert result == [42]
+
+
+class TestGetNumTokensEdgeCases:
+    """Tests for get_num_tokens edge cases."""
+
+    def test_get_num_tokens_empty_string(self) -> None:
+        """Test get_num_tokens returns 0 for empty string."""
+
+        def custom_tokenizer(text: str) -> list[int]:
+            if text == "":
+                return []
+            return [1, 2, 3]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        result = model.get_num_tokens("")
+        assert result == 0
+
+    def test_get_num_tokens_whitespace_only(self) -> None:
+        """Test get_num_tokens with whitespace-only string."""
+
+        def custom_tokenizer(text: str) -> list[int]:
+            return [1] if text.strip() == "" and len(text) > 0 else [1, 2]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        result = model.get_num_tokens(" ")
+        assert result == 1
+
+    def test_get_num_tokens_single_token(self) -> None:
+        """Test get_num_tokens with single-token text."""
+
+        def custom_tokenizer(text: str) -> list[int]:
+            return [99]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        result = model.get_num_tokens("a")
+        assert result == 1
+
+
+class TestGetNumTokensFromMessagesNoTools:
+    """Tests for get_num_tokens_from_messages without tools."""
+
+    def test_no_warning_when_tools_not_provided(self) -> None:
+        """Test that no warning is emitted when tools parameter is not provided."""
+
+        def custom_tokenizer(text: str) -> list[int]:
+            return [1]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        messages = [HumanMessage(content="Hello")]
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            model.get_num_tokens_from_messages(messages)
+            tool_warnings = [x for x in w if "tool schemas" in str(x.message).lower()]
+            assert len(tool_warnings) == 0
+
+    def test_no_warning_when_tools_is_none(self) -> None:
+        """Test that no warning is emitted when tools is explicitly None."""
+
+        def custom_tokenizer(text: str) -> list[int]:
+            return [1]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        messages = [HumanMessage(content="Hello")]
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            model.get_num_tokens_from_messages(messages, tools=None)
+            tool_warnings = [x for x in w if "tool schemas" in str(x.message).lower()]
+            assert len(tool_warnings) == 0
+
+
+class TestGetNumTokensFromMessagesEdgeCases:
+    """Tests for get_num_tokens_from_messages with edge cases and multiple messages."""
+
+    def test_empty_messages_list(self) -> None:
+        """Test get_num_tokens_from_messages returns 0 for empty list."""
+
+        def custom_tokenizer(text: str) -> list[int]:
+            return [1, 2, 3]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        result = model.get_num_tokens_from_messages([])
+        assert result == 0
+
+    def test_multiple_messages_sums_tokens(self) -> None:
+        """Test get_num_tokens_from_messages sums tokens from multiple messages."""
+        call_args: list[str] = []
+
+        def custom_tokenizer(text: str) -> list[int]:
+            call_args.append(text)
+            # Return different number of tokens based on text length
+            return list(range(len(text)))
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        messages = [
+            HumanMessage(content="Hi"),
+            AIMessage(content="Hello there"),
+            HumanMessage(content="Bye"),
+        ]
+        result = model.get_num_tokens_from_messages(messages)
+        # Each message is formatted via get_buffer_string individually,
+        # so result should be the sum of all individual token counts.
+        assert result > 0
+        # Verify the tokenizer was called once per message
+        assert len(call_args) == 3
+
+    def test_single_message_returns_correct_count(self) -> None:
+        """Test get_num_tokens_from_messages with a single message."""
+
+        def custom_tokenizer(text: str) -> list[int]:
+            return [1, 2, 3, 4, 5]
+
+        model = ConcreteLanguageModel(custom_get_token_ids=custom_tokenizer)
+        messages = [HumanMessage(content="Hello world")]
+        result = model.get_num_tokens_from_messages(messages)
+        assert result == 5
+
+
+class TestGeneratePrompt:
+    """Tests for generate_prompt via concrete implementation."""
+
+    def test_generate_prompt_single_prompt(self) -> None:
+        """Test generate_prompt with a single prompt returns LLMResult."""
+        model = ConcreteLanguageModel()
+        prompts = [StringPromptValue(text="Hello")]
+        result = model.generate_prompt(prompts)
+
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 1
+        assert result.generations[0][0].text == "test response"
+
+    def test_generate_prompt_multiple_prompts(self) -> None:
+        """Test generate_prompt with multiple prompts returns matching generations."""
+        model = ConcreteLanguageModel()
+        prompts = [
+            StringPromptValue(text="Prompt 1"),
+            StringPromptValue(text="Prompt 2"),
+            StringPromptValue(text="Prompt 3"),
+        ]
+        result = model.generate_prompt(prompts)
+
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 3
+        for gen_list in result.generations:
+            assert len(gen_list) == 1
+            assert gen_list[0].text == "test response"
+
+    def test_generate_prompt_empty_prompts(self) -> None:
+        """Test generate_prompt with empty prompt list."""
+        model = ConcreteLanguageModel()
+        result = model.generate_prompt([])
+
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 0
+
+
+class TestAGeneratePrompt:
+    """Tests for agenerate_prompt via concrete implementation."""
+
+    @pytest.mark.asyncio
+    async def test_agenerate_prompt_single_prompt(self) -> None:
+        """Test agenerate_prompt with a single prompt returns LLMResult."""
+        model = ConcreteLanguageModel()
+        prompts = [StringPromptValue(text="Hello")]
+        result = await model.agenerate_prompt(prompts)
+
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 1
+        assert result.generations[0][0].text == "test response"
+
+    @pytest.mark.asyncio
+    async def test_agenerate_prompt_multiple_prompts(self) -> None:
+        """Test agenerate_prompt with multiple prompts returns matching
+        generations."""
+        model = ConcreteLanguageModel()
+        prompts = [
+            StringPromptValue(text="Prompt 1"),
+            StringPromptValue(text="Prompt 2"),
+        ]
+        result = await model.agenerate_prompt(prompts)
+
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 2
+
+    @pytest.mark.asyncio
+    async def test_agenerate_prompt_empty_prompts(self) -> None:
+        """Test agenerate_prompt with empty prompt list."""
+        model = ConcreteLanguageModel()
+        result = await model.agenerate_prompt([])
+
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 0
+
+
+class TestIdentifyingParams:
+    """Tests for _identifying_params property."""
+
+    def test_identifying_params_returns_mapping(self) -> None:
+        """Test _identifying_params returns a Mapping type."""
+        from collections.abc import Mapping
+
+        model = ConcreteLanguageModel()
+        params = model._identifying_params
+        assert isinstance(params, Mapping)
+
+    def test_identifying_params_returns_lc_attributes(self) -> None:
+        """Test _identifying_params returns the same value as lc_attributes."""
+        model = ConcreteLanguageModel()
+        assert model._identifying_params == model.lc_attributes
+
+    def test_identifying_params_is_dict(self) -> None:
+        """Test _identifying_params is a dict for the base implementation."""
+        model = ConcreteLanguageModel()
+        params = model._identifying_params
+        assert isinstance(params, dict)
+        # Default lc_attributes is an empty dict
+        assert params == {}
+
+
+class TestInputTypeProperty:
+    """Tests for InputType property."""
+
+    def test_input_type_is_not_none(self) -> None:
+        """Test InputType property returns a non-None type."""
+        model = ConcreteLanguageModel()
+        input_type = model.InputType
+        assert input_type is not None
+
+    def test_input_type_includes_str(self) -> None:
+        """Test InputType includes str as a valid option."""
+        from typing import get_args
+
+        model = ConcreteLanguageModel()
+        input_type = model.InputType
+        type_args = get_args(input_type)
+        assert str in type_args
+
+    def test_input_type_includes_prompt_values(self) -> None:
+        """Test InputType includes StringPromptValue and ChatPromptValueConcrete."""
+        from typing import get_args
+
+        from langchain_core.prompt_values import (
+            ChatPromptValueConcrete,
+            StringPromptValue,
+        )
+
+        model = ConcreteLanguageModel()
+        input_type = model.InputType
+        type_args = get_args(input_type)
+        assert StringPromptValue in type_args
+        assert ChatPromptValueConcrete in type_args
+
+    def test_input_type_includes_message_list(self) -> None:
+        """Test InputType includes list[AnyMessage]."""
+        from typing import get_args, get_origin
+
+        model = ConcreteLanguageModel()
+        input_type = model.InputType
+        type_args = get_args(input_type)
+        # One of the type_args should be list[AnyMessage]
+        list_types = [t for t in type_args if get_origin(t) is list]
+        assert len(list_types) == 1
+
+
+class TestSetVerboseValidator:
+    """Tests for the set_verbose field validator."""
+
+    def test_verbose_true_stays_true(self) -> None:
+        """Test verbose=True remains True regardless of global setting."""
+        with patch(
+            "langchain_core.language_models.base._get_verbosity", return_value=False
+        ):
+            model = ConcreteLanguageModel(verbose=True)
+            assert model.verbose is True
+
+    def test_verbose_false_stays_false(self) -> None:
+        """Test verbose=False remains False regardless of global setting."""
+        with patch(
+            "langchain_core.language_models.base._get_verbosity", return_value=True
+        ):
+            model = ConcreteLanguageModel(verbose=False)
+            assert model.verbose is False
+
+    def test_verbose_none_uses_global_true(self) -> None:
+        """Test verbose=None resolves to True when global is True."""
+        with patch(
+            "langchain_core.language_models.base._get_verbosity", return_value=True
+        ):
+            model = ConcreteLanguageModel(verbose=None)
+            assert model.verbose is True
+
+    def test_verbose_none_uses_global_false(self) -> None:
+        """Test verbose=None resolves to False when global is False."""
+        with patch(
+            "langchain_core.language_models.base._get_verbosity", return_value=False
+        ):
+            model = ConcreteLanguageModel(verbose=None)
+            assert model.verbose is False
+
+    def test_verbose_default_uses_global_setting(self) -> None:
+        """Test verbose default_factory uses global verbosity setting.
+
+        The default_factory holds a direct reference to _get_verbosity, so we
+        must patch the function it delegates to (get_verbose) rather than
+        _get_verbosity itself.
+        """
+        with patch(
+            "langchain_core.language_models.base.get_verbose", return_value=True
+        ):
+            model = ConcreteLanguageModel()
+            assert model.verbose is True
+
+        with patch(
+            "langchain_core.language_models.base.get_verbose", return_value=False
+        ):
+            model = ConcreteLanguageModel()
+            assert model.verbose is False
+
+
+class TestModelDumpExclusions:
+    """Tests for model_dump and model_dump_json excluding expected fields."""
+
+    EXCLUDED_FIELDS = [
+        "cache",
+        "verbose",
+        "callbacks",
+        "tags",
+        "metadata",
+        "custom_get_token_ids",
+    ]
+
+    def test_model_dump_excludes_all_private_fields(self) -> None:
+        """Test model_dump excludes cache, verbose, callbacks, tags, metadata,
+        and custom_get_token_ids."""
+        model = ConcreteLanguageModel(
+            cache=True,
+            verbose=True,
+            tags=["tag1"],
+            metadata={"key": "value"},
+            custom_get_token_ids=lambda x: [1],
+        )
+        model_dict = model.model_dump()
+        for field in self.EXCLUDED_FIELDS:
+            assert field not in model_dict, (
+                f"{field} should be excluded from model_dump"
+            )
+
+    def test_model_dump_json_excludes_all_private_fields(self) -> None:
+        """Test model_dump_json excludes the same fields as model_dump."""
+        import json
+
+        model = ConcreteLanguageModel(
+            cache=True,
+            verbose=True,
+            tags=["tag1"],
+            metadata={"key": "value"},
+        )
+        json_str = model.model_dump_json()
+        parsed = json.loads(json_str)
+        for field in self.EXCLUDED_FIELDS:
+            assert field not in parsed, (
+                f"{field} should be excluded from model_dump_json"
+            )
+
+
+class TestCacheWithBaseCacheInstance:
+    """Tests for initialization with a BaseCache instance."""
+
+    def test_cache_with_base_cache_instance(self) -> None:
+        """Test initializing with a BaseCache instance."""
+        from langchain_core.caches import BaseCache
+
+        mock_cache = MagicMock(spec=BaseCache)
+        model = ConcreteLanguageModel(cache=mock_cache)
+        assert model.cache is mock_cache
+
+    def test_cache_instance_is_not_bool(self) -> None:
+        """Test that a BaseCache instance is distinct from bool cache values."""
+        from langchain_core.caches import BaseCache
+
+        mock_cache = MagicMock(spec=BaseCache)
+        model = ConcreteLanguageModel(cache=mock_cache)
+        assert model.cache is not True
+        assert model.cache is not False
+        assert model.cache is not None
+
+    def test_cache_instance_excluded_from_serialization(self) -> None:
+        """Test that a BaseCache instance is excluded from model_dump."""
+        from langchain_core.caches import BaseCache
+
+        mock_cache = MagicMock(spec=BaseCache)
+        model = ConcreteLanguageModel(cache=mock_cache)
+        model_dict = model.model_dump()
+        assert "cache" not in model_dict
+
+
+class TestWithStructuredOutputDictSchema:
+    """Tests for with_structured_output with dict schema."""
+
+    def test_with_structured_output_dict_raises_not_implemented(self) -> None:
+        """Test with_structured_output raises NotImplementedError for dict schema."""
+        model = ConcreteLanguageModel()
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        with pytest.raises(NotImplementedError):
+            model.with_structured_output(schema)
+
+    def test_with_structured_output_pydantic_raises_not_implemented(self) -> None:
+        """Test with_structured_output raises NotImplementedError for Pydantic model."""
+        model = ConcreteLanguageModel()
+
+        class TestSchema(BaseModel):
+            name: str
+            age: int
+
+        with pytest.raises(NotImplementedError):
+            model.with_structured_output(TestSchema)
+
+    def test_with_structured_output_with_kwargs_raises_not_implemented(self) -> None:
+        """Test with_structured_output raises NotImplementedError even with kwargs."""
+        model = ConcreteLanguageModel()
+        schema = {"type": "object"}
+        with pytest.raises(NotImplementedError):
+            model.with_structured_output(schema, method="json_mode")

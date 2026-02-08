@@ -18,20 +18,33 @@ from langchain_core.language_models import (
     ParrotFakeChatModel,
 )
 from langchain_core.language_models._utils import _normalize_messages
-from langchain_core.language_models.chat_models import _generate_response_from_error
+from langchain_core.language_models.chat_models import (
+    SimpleChatModel,
+    _cleanup_llm_representation,
+    _format_for_tracing,
+    _format_ls_structured_output,
+    _gen_info_and_msg_metadata,
+    _generate_response_from_error,
+    agenerate_from_stream,
+    generate_from_stream,
+)
 from langchain_core.language_models.fake_chat_models import (
+    FakeChatModel,
     FakeListChatModelError,
     GenericFakeChatModel,
 )
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
+    AnyMessage,
     BaseMessage,
     HumanMessage,
     SystemMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.outputs.generation import Generation
 from langchain_core.outputs.llm_result import LLMResult
+from langchain_core.prompt_values import ChatPromptValue, PromptValue, StringPromptValue
 from langchain_core.tracers import LogStreamCallbackHandler
 from langchain_core.tracers.base import BaseTracer
 from langchain_core.tracers.context import collect_runs
@@ -1318,3 +1331,687 @@ def test_generate_response_from_error_handles_streaming_response_failure() -> No
     assert metadata["body"] is None
     assert metadata["headers"] == {"content-type": "application/json"}
     assert metadata["status_code"] == 400
+
+
+# ---------------------------------------------------------------------------
+# New tests for additional coverage of chat_models.py
+# ---------------------------------------------------------------------------
+
+
+class TestConvertInput:
+    """Tests for ``BaseChatModel._convert_input``."""
+
+    def _get_model(self) -> BaseChatModel:
+        return FakeListChatModel(responses=["hi"])
+
+    def test_convert_input_from_string(self) -> None:
+        """A plain string should be wrapped in a ``StringPromptValue``."""
+        model = self._get_model()
+        result = model._convert_input("hello")
+        assert isinstance(result, StringPromptValue)
+        assert result.text == "hello"
+
+    def test_convert_input_from_prompt_value(self) -> None:
+        """A ``PromptValue`` should be returned as-is."""
+        model = self._get_model()
+        pv = StringPromptValue(text="hello")
+        result = model._convert_input(pv)
+        assert result is pv
+
+    def test_convert_input_from_chat_prompt_value(self) -> None:
+        """A ``ChatPromptValue`` should be returned as-is."""
+        model = self._get_model()
+        cpv = ChatPromptValue(messages=[HumanMessage(content="hi")])
+        result = model._convert_input(cpv)
+        assert result is cpv
+
+    def test_convert_input_from_message_sequence(self) -> None:
+        """A list of messages should be converted to a ``ChatPromptValue``."""
+        model = self._get_model()
+        msgs = [HumanMessage(content="hello"), AIMessage(content="world")]
+        result = model._convert_input(msgs)
+        assert isinstance(result, ChatPromptValue)
+        assert len(result.messages) == 2
+
+    def test_convert_input_from_dict_messages(self) -> None:
+        """A list of dicts (OpenAI-style) should be converted."""
+        model = self._get_model()
+        result = model._convert_input([{"role": "user", "content": "hello"}])
+        assert isinstance(result, ChatPromptValue)
+        assert len(result.messages) == 1
+        assert isinstance(result.messages[0], HumanMessage)
+
+    def test_convert_input_invalid_type_raises(self) -> None:
+        """Non-string, non-PromptValue, non-sequence should raise ``ValueError``."""
+        model = self._get_model()
+        with pytest.raises(ValueError, match="Invalid input type"):
+            model._convert_input(12345)  # type: ignore[arg-type]
+
+
+class TestBaseChatModelDict:
+    """Tests for ``BaseChatModel.dict()``."""
+
+    def test_dict_contains_type_key(self) -> None:
+        """``dict()`` should include ``_type`` from ``_llm_type``."""
+        model = FakeChatModel()
+        d = model.dict()
+        assert "_type" in d
+        assert d["_type"] == "fake-chat-model"
+
+    def test_dict_contains_identifying_params(self) -> None:
+        """``dict()`` should include the identifying params."""
+        model = FakeChatModel()
+        d = model.dict()
+        # FakeChatModel._identifying_params returns {"key": "fake"}
+        assert d.get("key") == "fake"
+
+    def test_dict_identifying_params_for_fake_list(self) -> None:
+        """``FakeListChatModel.dict()`` includes responses."""
+        model = FakeListChatModel(responses=["a", "b"])
+        d = model.dict()
+        assert d["_type"] == "fake-list-chat-model"
+        assert d["responses"] == ["a", "b"]
+
+
+class TestOutputTypeProperty:
+    """Tests for ``BaseChatModel.OutputType``."""
+
+    def test_output_type_is_any_message(self) -> None:
+        model = FakeListChatModel(responses=["x"])
+        assert model.OutputType is AnyMessage
+
+
+class TestGenerateFromStream:
+    """Tests for ``generate_from_stream`` and ``agenerate_from_stream``."""
+
+    def test_accumulates_chunks(self) -> None:
+        """Should accumulate chunks and return a ``ChatResult``."""
+        chunks = iter(
+            [
+                ChatGenerationChunk(message=AIMessageChunk(content="hel")),
+                ChatGenerationChunk(message=AIMessageChunk(content="lo")),
+            ]
+        )
+        result = generate_from_stream(chunks)
+        assert isinstance(result, ChatResult)
+        assert len(result.generations) == 1
+        gen = result.generations[0]
+        assert isinstance(gen, ChatGeneration)
+        assert isinstance(gen.message, AIMessage)
+        assert gen.message.content == "hello"
+
+    def test_single_chunk(self) -> None:
+        """A single chunk should still work."""
+        chunks = iter([ChatGenerationChunk(message=AIMessageChunk(content="only"))])
+        result = generate_from_stream(chunks)
+        assert result.generations[0].message.content == "only"
+
+    def test_empty_stream_raises_value_error(self) -> None:
+        """An empty iterator should raise ``ValueError``."""
+        chunks: Iterator[ChatGenerationChunk] = iter([])
+        with pytest.raises(ValueError, match="No generations found in stream"):
+            generate_from_stream(chunks)
+
+    def test_preserves_generation_info(self) -> None:
+        """``generation_info`` from the accumulated chunk is preserved."""
+        chunks = iter(
+            [
+                ChatGenerationChunk(
+                    message=AIMessageChunk(content="a"),
+                    generation_info={"finish_reason": "stop"},
+                ),
+            ]
+        )
+        result = generate_from_stream(chunks)
+        assert result.generations[0].generation_info == {"finish_reason": "stop"}
+
+
+class TestAGenerateFromStream:
+    """Tests for the async ``agenerate_from_stream``."""
+
+    async def test_accumulates_chunks(self) -> None:
+        async def _stream() -> AsyncIterator[ChatGenerationChunk]:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="hel"))
+            yield ChatGenerationChunk(message=AIMessageChunk(content="lo"))
+
+        result = await agenerate_from_stream(_stream())
+        assert isinstance(result, ChatResult)
+        assert len(result.generations) == 1
+        assert result.generations[0].message.content == "hello"
+
+    async def test_empty_stream_raises_value_error(self) -> None:
+        async def _stream() -> AsyncIterator[ChatGenerationChunk]:
+            return
+            yield  # noqa: RET504  # make it an async generator
+
+        with pytest.raises(ValueError, match="No generations found in stream"):
+            await agenerate_from_stream(_stream())
+
+
+class _MinimalSimpleChatModel(SimpleChatModel):
+    """Minimal ``SimpleChatModel`` subclass for testing."""
+
+    @property
+    def _llm_type(self) -> str:
+        return "minimal-simple"
+
+    def _call(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> str:
+        return "simple response"
+
+
+class TestSimpleChatModelGenerate:
+    """Tests for ``SimpleChatModel._generate``."""
+
+    def test_generate_wraps_call_output(self) -> None:
+        """``_generate`` should wrap ``_call`` output in a ``ChatResult``."""
+        model = _MinimalSimpleChatModel()
+        result = model._generate([HumanMessage(content="hello")])
+        assert isinstance(result, ChatResult)
+        assert len(result.generations) == 1
+        gen = result.generations[0]
+        assert isinstance(gen, ChatGeneration)
+        assert isinstance(gen.message, AIMessage)
+        assert gen.message.content == "simple response"
+
+    async def test_agenerate_falls_back_to_executor(self) -> None:
+        """``SimpleChatModel._agenerate`` should fall back to running _generate."""
+        model = _MinimalSimpleChatModel()
+        result = await model._agenerate([HumanMessage(content="hello")])
+        assert isinstance(result, ChatResult)
+        assert len(result.generations) == 1
+        assert result.generations[0].message.content == "simple response"
+
+
+class TestFormatForTracing:
+    """Tests for ``_format_for_tracing``."""
+
+    def test_image_block_converted_to_openai_format(self) -> None:
+        """Image content blocks in v0/v1 data format get converted for tracing."""
+        msg = HumanMessage(
+            content=[
+                {
+                    "type": "image",
+                    "source_type": "url",
+                    "url": "https://example.com/img.png",
+                }
+            ]
+        )
+        traced = _format_for_tracing([msg])
+        assert len(traced) == 1
+        block = traced[0].content[0]
+        assert isinstance(block, dict)
+        assert block["type"] == "image_url"
+        assert block["image_url"]["url"] == "https://example.com/img.png"
+
+    def test_single_key_dict_gets_type_added(self) -> None:
+        """Content blocks with a single key and no ``type`` get ``type`` added."""
+        msg = HumanMessage(
+            content=[
+                {"cacheControl": {"kind": "ephemeral"}},
+            ]
+        )
+        traced = _format_for_tracing([msg])
+        block = traced[0].content[0]
+        assert isinstance(block, dict)
+        assert block["type"] == "cacheControl"
+        assert block["cacheControl"] == {"kind": "ephemeral"}
+
+    def test_string_content_unchanged(self) -> None:
+        """Messages with string content pass through unchanged."""
+        msg = HumanMessage(content="plain text")
+        traced = _format_for_tracing([msg])
+        assert traced[0].content == "plain text"
+        # Should be the exact same object when no changes needed
+        assert traced[0] is msg
+
+    def test_blocks_with_type_unchanged(self) -> None:
+        """Content blocks that already have ``type`` are not modified."""
+        msg = HumanMessage(content=[{"type": "text", "text": "hello"}])
+        traced = _format_for_tracing([msg])
+        # No transformation needed, so the original message is returned
+        assert traced[0] is msg
+
+    def test_file_base64_block_converted_for_tracing(self) -> None:
+        """File content blocks with base64 get converted to v0 format for tracing."""
+        msg = HumanMessage(
+            content=[
+                {
+                    "type": "file",
+                    "mime_type": "application/pdf",
+                    "base64": "abc123",
+                }
+            ]
+        )
+        traced = _format_for_tracing([msg])
+        block = traced[0].content[0]
+        assert isinstance(block, dict)
+        assert block.get("data") == "abc123"
+        assert block.get("source_type") == "base64"
+        assert "base64" not in block
+
+    def test_multiple_messages_processed(self) -> None:
+        """Multiple messages should all be processed."""
+        msgs = [
+            HumanMessage(content="text"),
+            HumanMessage(content=[{"marker": {"val": 1}}]),
+        ]
+        traced = _format_for_tracing(msgs)
+        assert len(traced) == 2
+        # First message unchanged
+        assert traced[0] is msgs[0]
+        # Second message has single-key block with type added
+        assert traced[1].content[0]["type"] == "marker"
+
+
+class TestGenInfoAndMsgMetadata:
+    """Tests for ``_gen_info_and_msg_metadata``."""
+
+    def test_merges_generation_info_with_response_metadata(self) -> None:
+        gen = ChatGeneration(
+            message=AIMessage(
+                content="hi",
+                response_metadata={"model": "test"},
+            ),
+            generation_info={"finish_reason": "stop"},
+        )
+        result = _gen_info_and_msg_metadata(gen)
+        assert result["finish_reason"] == "stop"
+        assert result["model"] == "test"
+
+    def test_empty_generation_info(self) -> None:
+        gen = ChatGeneration(
+            message=AIMessage(content="hi", response_metadata={"key": "val"}),
+        )
+        result = _gen_info_and_msg_metadata(gen)
+        assert result == {"key": "val"}
+
+    def test_empty_response_metadata(self) -> None:
+        gen = ChatGeneration(
+            message=AIMessage(content="hi"),
+            generation_info={"token_count": 10},
+        )
+        result = _gen_info_and_msg_metadata(gen)
+        assert result == {"token_count": 10}
+
+    def test_both_empty(self) -> None:
+        gen = ChatGeneration(message=AIMessage(content="hi"))
+        result = _gen_info_and_msg_metadata(gen)
+        assert result == {}
+
+    def test_works_with_chunk(self) -> None:
+        chunk = ChatGenerationChunk(
+            message=AIMessageChunk(content="hi", response_metadata={"rm": 1}),
+            generation_info={"gi": 2},
+        )
+        result = _gen_info_and_msg_metadata(chunk)
+        assert result == {"gi": 2, "rm": 1}
+
+    def test_response_metadata_overrides_generation_info(self) -> None:
+        """When keys overlap, response_metadata values win (dict merge order)."""
+        gen = ChatGeneration(
+            message=AIMessage(
+                content="",
+                response_metadata={"key": "from_metadata"},
+            ),
+            generation_info={"key": "from_gen_info"},
+        )
+        result = _gen_info_and_msg_metadata(gen)
+        assert result["key"] == "from_metadata"
+
+
+class TestCleanupLlmRepresentation:
+    """Tests for ``_cleanup_llm_representation``."""
+
+    def test_removes_repr_from_not_implemented(self) -> None:
+        serialized = {
+            "type": "not_implemented",
+            "repr": "<some repr string>",
+        }
+        _cleanup_llm_representation(serialized, 1)
+        assert "repr" not in serialized
+        assert serialized["type"] == "not_implemented"
+
+    def test_removes_graph(self) -> None:
+        serialized = {
+            "type": "constructor",
+            "graph": {"nodes": [], "edges": []},
+            "kwargs": {},
+        }
+        _cleanup_llm_representation(serialized, 1)
+        assert "graph" not in serialized
+
+    def test_recursive_cleanup_in_kwargs(self) -> None:
+        serialized = {
+            "kwargs": {
+                "nested": {
+                    "type": "not_implemented",
+                    "repr": "remove me",
+                    "graph": {"stuff": True},
+                }
+            }
+        }
+        _cleanup_llm_representation(serialized, 1)
+        nested = serialized["kwargs"]["nested"]
+        assert "repr" not in nested
+        assert "graph" not in nested
+
+    def test_non_dict_input_is_noop(self) -> None:
+        """Non-dict inputs are silently ignored."""
+        _cleanup_llm_representation("not a dict", 1)
+        _cleanup_llm_representation(42, 1)
+        _cleanup_llm_representation(None, 1)
+
+    def test_max_depth_guard(self) -> None:
+        """Should bail out at max depth (no error, just stops recursing)."""
+        deeply_nested: dict[str, Any] = {"type": "not_implemented", "repr": "keep"}
+        _cleanup_llm_representation(deeply_nested, 200)
+        # At depth > 100, the function returns early without modification
+        assert "repr" in deeply_nested
+
+    def test_normal_dict_without_special_keys(self) -> None:
+        """A dict without ``repr``/``graph``/``not_implemented`` stays unchanged."""
+        serialized = {"type": "constructor", "kwargs": {"a": 1}}
+        _cleanup_llm_representation(serialized, 1)
+        assert serialized == {"type": "constructor", "kwargs": {"a": 1}}
+
+
+class TestShouldStream:
+    """Tests for ``BaseChatModel._should_stream``."""
+
+    def test_no_stream_implemented_returns_false(self) -> None:
+        """If ``_stream`` is not overridden, should return False for sync."""
+        model = NoStreamingModel()
+        assert model._should_stream(async_api=False) is False
+
+    def test_no_stream_or_astream_returns_false_for_async(self) -> None:
+        """If neither ``_stream`` nor ``_astream`` is overridden, False for async."""
+        model = NoStreamingModel()
+        assert model._should_stream(async_api=True) is False
+
+    def test_stream_implemented_with_streaming_callback(self) -> None:
+        """With ``_stream`` overridden and a streaming callback, should be True."""
+        model = StreamingModel()
+        handler = LogStreamCallbackHandler()
+        # Create a mock run_manager-like object that has handlers
+        from unittest.mock import MagicMock
+
+        run_manager = MagicMock()
+        run_manager.handlers = [handler]
+        assert model._should_stream(async_api=False, run_manager=run_manager) is True
+
+    def test_disable_streaming_true_returns_false(self) -> None:
+        """``disable_streaming=True`` should always return False."""
+        model = StreamingModel(disable_streaming=True)
+        assert model._should_stream(async_api=False) is False
+
+    def test_disable_streaming_tool_calling_with_tools(self) -> None:
+        """``disable_streaming='tool_calling'`` with tools kwarg returns False."""
+        model = StreamingModel(disable_streaming="tool_calling")
+        assert model._should_stream(async_api=False, tools=[{"type": "f"}]) is False
+
+    def test_disable_streaming_tool_calling_without_tools(self) -> None:
+        """``disable_streaming='tool_calling'`` without tools, respects other logic."""
+        model = StreamingModel(disable_streaming="tool_calling")
+        # No tools, no streaming callback, no stream kwarg -> depends on handlers
+        assert model._should_stream(async_api=False) is False
+
+    def test_stream_kwarg_true(self) -> None:
+        """Explicit ``stream=True`` kwarg should return True."""
+        model = StreamingModel()
+        assert model._should_stream(async_api=False, stream=True) is True
+
+    def test_stream_kwarg_false(self) -> None:
+        """Explicit ``stream=False`` kwarg should return False."""
+        model = StreamingModel()
+        assert model._should_stream(async_api=False, stream=False) is False
+
+    def test_streaming_attribute_set(self) -> None:
+        """When ``streaming`` field is explicitly set, it should be respected."""
+        model = StreamingModel(streaming=True)
+        assert model._should_stream(async_api=False) is True
+
+    def test_streaming_attribute_false(self) -> None:
+        """When ``streaming`` is explicitly set to False."""
+        model = StreamingModel(streaming=False)
+        assert model._should_stream(async_api=False) is False
+
+    def test_no_handlers_no_streaming(self) -> None:
+        """With no streaming callbacks and no stream kwarg, returns False."""
+        model = StreamingModel()
+        assert model._should_stream(async_api=False) is False
+
+    def test_async_with_sync_stream_only(self) -> None:
+        """If only ``_stream`` is overridden (not ``_astream``),
+        async should still be able to stream (falls back to sync)."""
+        model = StreamingModel()
+        assert model._should_stream(async_api=True, stream=True) is True
+
+
+class TestBindTools:
+    """Tests for ``BaseChatModel.bind_tools``."""
+
+    def test_raises_not_implemented_by_default(self) -> None:
+        """Base ``bind_tools`` should raise ``NotImplementedError``."""
+        model = FakeListChatModel(responses=["hi"])
+        with pytest.raises(NotImplementedError):
+            model.bind_tools([{"type": "function", "function": {"name": "f"}}])
+
+
+class TestWithStructuredOutput:
+    """Tests for ``BaseChatModel.with_structured_output``."""
+
+    def test_raises_not_implemented_when_bind_tools_not_overridden(self) -> None:
+        """Should raise ``NotImplementedError`` when bind_tools is the base impl."""
+        model = FakeListChatModel(responses=["hi"])
+        with pytest.raises(NotImplementedError, match="not implemented"):
+            model.with_structured_output({"type": "object", "properties": {}})
+
+
+class TestCombineLlmOutputs:
+    """Tests for ``BaseChatModel._combine_llm_outputs``."""
+
+    def test_returns_empty_dict_by_default(self) -> None:
+        model = FakeListChatModel(responses=["x"])
+        result = model._combine_llm_outputs([{"token_usage": 10}, None])
+        assert result == {}
+
+    def test_returns_empty_dict_with_empty_list(self) -> None:
+        model = FakeListChatModel(responses=["x"])
+        result = model._combine_llm_outputs([])
+        assert result == {}
+
+
+class TestConvertCachedGenerations:
+    """Tests for ``BaseChatModel._convert_cached_generations``."""
+
+    def test_with_chat_generation_objects(self) -> None:
+        """``ChatGeneration`` objects should pass through."""
+        model = FakeListChatModel(responses=["x"])
+        chat_gen = ChatGeneration(message=AIMessage(content="cached"))
+        result = model._convert_cached_generations([chat_gen])
+        assert len(result) == 1
+        assert isinstance(result[0], ChatGeneration)
+        assert result[0].message.content == "cached"
+
+    def test_with_legacy_generation_objects(self) -> None:
+        """Plain ``Generation`` objects (legacy) should be converted."""
+        model = FakeListChatModel(responses=["x"])
+        legacy_gen = Generation(text="old cached")
+        result = model._convert_cached_generations([legacy_gen])
+        assert len(result) == 1
+        assert isinstance(result[0], ChatGeneration)
+        assert isinstance(result[0].message, AIMessage)
+        assert result[0].message.content == "old cached"
+
+    def test_with_mixed_generation_objects(self) -> None:
+        """Mix of ``ChatGeneration`` and ``Generation`` objects."""
+        model = FakeListChatModel(responses=["x"])
+        chat_gen = ChatGeneration(message=AIMessage(content="chat"))
+        legacy_gen = Generation(text="legacy")
+        result = model._convert_cached_generations([chat_gen, legacy_gen])
+        assert len(result) == 2
+        assert result[0].message.content == "chat"
+        assert isinstance(result[1], ChatGeneration)
+        assert result[1].message.content == "legacy"
+
+    def test_preserves_generation_info_on_legacy(self) -> None:
+        """``generation_info`` from legacy ``Generation`` is preserved."""
+        model = FakeListChatModel(responses=["x"])
+        legacy_gen = Generation(text="info", generation_info={"finish_reason": "stop"})
+        result = model._convert_cached_generations([legacy_gen])
+        assert result[0].generation_info == {"finish_reason": "stop"}
+
+    def test_zeroes_out_total_cost_on_cache_hit(self) -> None:
+        """Cached ``ChatGeneration`` with ``usage_metadata`` gets total_cost=0."""
+        model = FakeListChatModel(responses=["x"])
+        chat_gen = ChatGeneration(
+            message=AIMessage(
+                content="cached",
+                usage_metadata={
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "total_cost": 0.005,
+                },
+            )
+        )
+        result = model._convert_cached_generations([chat_gen])
+        assert result[0].message.usage_metadata["total_cost"] == 0
+
+
+class TestGenerateMethod:
+    """Tests for ``BaseChatModel.generate``."""
+
+    def test_single_message_list(self) -> None:
+        """Should handle a single list of messages."""
+        model = FakeListChatModel(responses=["response1", "response2"])
+        result = model.generate([[HumanMessage(content="hello")]])
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 1
+        gen = result.generations[0][0]
+        assert isinstance(gen, ChatGeneration)
+        assert gen.message.content == "response1"
+
+    def test_multiple_message_lists(self) -> None:
+        """Should handle multiple lists of messages."""
+        model = FakeListChatModel(responses=["a", "b", "c"])
+        result = model.generate(
+            [
+                [HumanMessage(content="first")],
+                [HumanMessage(content="second")],
+            ]
+        )
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 2
+        assert result.generations[0][0].message.content == "a"
+        assert result.generations[1][0].message.content == "b"
+
+    def test_generate_returns_run_info(self) -> None:
+        """Run info should be populated when callbacks are used."""
+        model = FakeListChatModel(responses=["hi"])
+        cb = FakeTracer()
+        result = model.generate(
+            [[HumanMessage(content="hello")]],
+            callbacks=[cb],
+        )
+        assert result.run is not None
+        assert len(result.run) == 1
+
+    def test_generate_combines_llm_output(self) -> None:
+        """``llm_output`` should be the result of ``_combine_llm_outputs``."""
+        model = FakeListChatModel(responses=["x"])
+        result = model.generate([[HumanMessage(content="hi")]])
+        # _combine_llm_outputs returns {} by default
+        assert result.llm_output == {}
+
+
+class TestAGenerateMethod:
+    """Tests for ``BaseChatModel.agenerate``."""
+
+    async def test_single_message_list(self) -> None:
+        model = FakeListChatModel(responses=["async_response"])
+        result = await model.agenerate([[HumanMessage(content="hello")]])
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 1
+        assert result.generations[0][0].message.content == "async_response"
+
+    async def test_multiple_message_lists(self) -> None:
+        model = FakeListChatModel(responses=["a", "b", "c"])
+        result = await model.agenerate(
+            [
+                [HumanMessage(content="first")],
+                [HumanMessage(content="second")],
+            ]
+        )
+        assert isinstance(result, LLMResult)
+        assert len(result.generations) == 2
+
+    async def test_agenerate_returns_run_info(self) -> None:
+        model = FakeListChatModel(responses=["hi"])
+        cb = FakeTracer()
+        result = await model.agenerate(
+            [[HumanMessage(content="hello")]],
+            callbacks=[cb],
+        )
+        assert result.run is not None
+        assert len(result.run) == 1
+
+
+class TestFormatLsStructuredOutput:
+    """Tests for ``_format_ls_structured_output``."""
+
+    def test_with_none(self) -> None:
+        result = _format_ls_structured_output(None)
+        assert result == {}
+
+    def test_with_valid_pydantic_schema(self) -> None:
+        """Providing a valid Pydantic class as schema should produce valid output."""
+        from pydantic import BaseModel as PydanticBaseModel
+
+        class MySchema(PydanticBaseModel):
+            answer: str
+            score: int
+
+        fmt = {"schema": MySchema, "kwargs": {"method": "function_calling"}}
+        result = _format_ls_structured_output(fmt)
+        assert "ls_structured_output_format" in result
+        inner = result["ls_structured_output_format"]
+        assert inner["kwargs"] == {"method": "function_calling"}
+        assert "properties" in inner["schema"]
+        assert "answer" in inner["schema"]["properties"]
+        assert "score" in inner["schema"]["properties"]
+
+    def test_with_empty_dict(self) -> None:
+        """An empty dict (falsy) should return empty."""
+        result = _format_ls_structured_output({})
+        assert result == {}
+
+    def test_with_invalid_schema_returns_empty(self) -> None:
+        """If ``convert_to_json_schema`` raises ValueError, returns empty dict."""
+        result = _format_ls_structured_output(
+            {"schema": "not_a_valid_schema", "kwargs": {}}
+        )
+        assert result == {}
+
+
+class TestSimpleChatModelFakeChatModel:
+    """Tests for ``FakeChatModel`` (a ``SimpleChatModel`` subclass)."""
+
+    def test_generate_returns_chat_result(self) -> None:
+        model = FakeChatModel()
+        result = model._generate([HumanMessage(content="hello")])
+        assert isinstance(result, ChatResult)
+        assert result.generations[0].message.content == "fake response"
+
+    async def test_agenerate_returns_chat_result(self) -> None:
+        """FakeChatModel overrides _agenerate directly."""
+        model = FakeChatModel()
+        result = await model._agenerate([HumanMessage(content="hello")])
+        assert isinstance(result, ChatResult)
+        assert result.generations[0].message.content == "fake response"

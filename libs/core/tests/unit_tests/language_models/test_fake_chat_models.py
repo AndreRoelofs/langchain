@@ -1,7 +1,11 @@
 """Tests for langchain_core.language_models.fake_chat_models module."""
 
+import time
+from unittest.mock import MagicMock
+
 import pytest
 
+from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.fake_chat_models import (
     FakeChatModel,
     FakeListChatModel,
@@ -10,7 +14,13 @@ from langchain_core.language_models.fake_chat_models import (
     GenericFakeChatModel,
     ParrotFakeChatModel,
 )
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+)
+from langchain_core.outputs import ChatGeneration, ChatResult
 
 
 class TestFakeMessagesListChatModel:
@@ -304,7 +314,9 @@ class TestGenericFakeChatModel:
 
     def test_stream_with_additional_kwargs(self) -> None:
         """Test stream with additional_kwargs."""
-        message = AIMessage(content="", additional_kwargs={"custom_key": "custom_value"})
+        message = AIMessage(
+            content="", additional_kwargs={"custom_key": "custom_value"}
+        )
         messages = iter([message])
         model = GenericFakeChatModel(messages=messages)
         chunks = list(model.stream("prompt"))
@@ -395,8 +407,289 @@ class TestParrotFakeChatModel:
         message = HumanMessage(
             content=[
                 {"type": "text", "text": "Hello"},
-                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/img.png"},
+                },
             ]
         )
         result = model.invoke([message])
         assert result.content == message.content
+
+
+class TestFakeMessagesListChatModelAdditional:
+    """Additional tests for FakeMessagesListChatModel class."""
+
+    def test_generate_with_non_ai_message_response(self) -> None:
+        """Test _generate can accept HumanMessage in responses list."""
+        human_msg = HumanMessage(content="echoed back")
+        model = FakeMessagesListChatModel(responses=[human_msg])
+        result = model._generate([HumanMessage(content="hi")])
+        assert len(result.generations) == 1
+        assert result.generations[0].message.content == "echoed back"
+        assert isinstance(result.generations[0].message, HumanMessage)
+
+    async def test_ainvoke(self) -> None:
+        """Test async invocation of FakeMessagesListChatModel."""
+        responses = [
+            AIMessage(content="async first"),
+            AIMessage(content="async second"),
+        ]
+        model = FakeMessagesListChatModel(responses=responses)
+        result1 = await model.ainvoke("prompt1")
+        assert result1.content == "async first"
+        result2 = await model.ainvoke("prompt2")
+        assert result2.content == "async second"
+        # Cycle back
+        result3 = await model.ainvoke("prompt3")
+        assert result3.content == "async first"
+
+    def test_generate_returns_proper_chat_result_structure(self) -> None:
+        """Test _generate returns proper ChatResult with generations list."""
+        model = FakeMessagesListChatModel(responses=[AIMessage(content="structured")])
+        result = model._generate([HumanMessage(content="hi")])
+        assert isinstance(result, ChatResult)
+        assert isinstance(result.generations, list)
+        assert len(result.generations) == 1
+        generation = result.generations[0]
+        assert isinstance(generation, ChatGeneration)
+        assert isinstance(generation.message, AIMessage)
+        assert generation.message.content == "structured"
+
+    def test_single_response_counter_stays_at_zero(self) -> None:
+        """Test that with a single response, counter resets to 0 after each call."""
+        model = FakeMessagesListChatModel(responses=[AIMessage(content="only one")])
+        assert model.i == 0
+        model.invoke("p1")
+        assert model.i == 0
+        model.invoke("p2")
+        assert model.i == 0
+        model.invoke("p3")
+        assert model.i == 0
+
+
+class TestFakeListChatModelAdditional:
+    """Additional tests for FakeListChatModel class."""
+
+    def test_call_with_sleep(self) -> None:
+        """Test _call with sleep delays execution."""
+        model = FakeListChatModel(responses=["hello"], sleep=0.05)
+        start = time.time()
+        result = model.invoke("prompt")
+        elapsed = time.time() - start
+        assert elapsed >= 0.05
+        assert result.content == "hello"
+
+    def test_stream_chunk_position_single_char(self) -> None:
+        """Test _stream chunk_position on single char response is 'last'."""
+        model = FakeListChatModel(responses=["x"])
+        chunks = list(model.stream("prompt"))
+        assert len(chunks) == 1
+        assert chunks[0].content == "x"
+        assert chunks[0].chunk_position == "last"
+
+    async def test_astream_chunk_position_last(self) -> None:
+        """Test _astream marks last chunk with chunk_position='last'."""
+        model = FakeListChatModel(responses=["abc"])
+        chunks = [chunk async for chunk in model.astream("prompt")]
+        assert len(chunks) == 3
+        # Only the last chunk should have chunk_position set
+        assert chunks[0].chunk_position is None
+        assert chunks[1].chunk_position is None
+        assert chunks[2].chunk_position == "last"
+
+    def test_stream_error_on_first_chunk(self) -> None:
+        """Test _stream raises error on first chunk (index 0)."""
+        model = FakeListChatModel(responses=["hello"], error_on_chunk_number=0)
+        with pytest.raises(FakeListChatModelError):
+            list(model.stream("prompt"))
+
+    async def test_astream_error_on_first_chunk(self) -> None:
+        """Test _astream raises error on first chunk (index 0)."""
+        model = FakeListChatModel(responses=["hello"], error_on_chunk_number=0)
+        chunks: list[AIMessageChunk] = []
+        with pytest.raises(FakeListChatModelError):
+            async for chunk in model.astream("prompt"):
+                chunks.append(chunk)
+        assert len(chunks) == 0
+
+    def test_batch_with_single_config(self) -> None:
+        """Test batch with a single config dict (not a list)."""
+        model = FakeListChatModel(responses=["r1", "r2", "r3"])
+        results = model.batch(["p1", "p2", "p3"], config={"metadata": {"key": "val"}})
+        assert len(results) == 3
+        assert [r.content for r in results] == ["r1", "r2", "r3"]
+
+    async def test_abatch_with_single_config(self) -> None:
+        """Test abatch with a single config dict (not a list)."""
+        model = FakeListChatModel(responses=["r1", "r2", "r3"])
+        results = await model.abatch(
+            ["p1", "p2", "p3"], config={"metadata": {"key": "val"}}
+        )
+        assert len(results) == 3
+        assert [r.content for r in results] == ["r1", "r2", "r3"]
+
+    def test_stream_empty_string_response(self) -> None:
+        """Test stream with empty string response raises ValueError."""
+        model = FakeListChatModel(responses=[""])
+        # Empty string has no characters, so _stream yields nothing,
+        # and the base class raises ValueError for no generation chunks
+        with pytest.raises(ValueError, match="No generation chunks were returned"):
+            list(model.stream("prompt"))
+
+
+class TestFakeChatModelAdditional:
+    """Additional tests for FakeChatModel class."""
+
+    async def test_agenerate_returns_chat_result(self) -> None:
+        """Test _agenerate returns proper ChatResult structure."""
+        model = FakeChatModel()
+        result = await model._agenerate([HumanMessage(content="hi")])
+        assert isinstance(result, ChatResult)
+        assert len(result.generations) == 1
+        generation = result.generations[0]
+        assert isinstance(generation, ChatGeneration)
+        assert isinstance(generation.message, AIMessage)
+        assert generation.message.content == "fake response"
+
+    def test_llm_type_and_identifying_params_consistency(self) -> None:
+        """Test _llm_type and _identifying_params return expected values."""
+        model = FakeChatModel()
+        assert model._llm_type == "fake-chat-model"
+        params = model._identifying_params
+        assert isinstance(params, dict)
+        assert params == {"key": "fake"}
+        # Verify consistency across multiple accesses
+        assert model._llm_type == "fake-chat-model"
+        assert model._identifying_params == {"key": "fake"}
+
+
+class TestGenericFakeChatModelAdditional:
+    """Additional tests for GenericFakeChatModel class."""
+
+    def test_stream_with_multiple_words_preserves_whitespace(self) -> None:
+        """Test _stream with multiple words preserves whitespace in detail."""
+        messages = iter([AIMessage(content="hello world foo")])
+        model = GenericFakeChatModel(messages=messages)
+        chunks = list(model.stream("prompt"))
+        contents = [str(c.content) for c in chunks]
+        # re.split(r"(\s)", "hello world foo") produces
+        # ["hello", " ", "world", " ", "foo"]
+        assert contents == ["hello", " ", "world", " ", "foo"]
+        # Reconstructed content matches original
+        assert "".join(contents) == "hello world foo"
+
+    def test_stream_function_call_non_string_values(self) -> None:
+        """Test _stream with function_call having non-string values hits else branch."""
+        message = AIMessage(
+            content="",
+            additional_kwargs={
+                "function_call": {"name": "my_func", "parsed": {"key": "value"}}
+            },
+        )
+        messages = iter([message])
+        model = GenericFakeChatModel(messages=messages)
+        chunks = list(model.stream("prompt"))
+        assert len(chunks) > 0
+
+        # Verify we get chunks for both function_call sub-keys
+        all_kwargs = [c.additional_kwargs for c in chunks if c.additional_kwargs]
+        # "name" is a string so it gets split by comma; "parsed" is a dict so it goes
+        # through the else branch yielding a single chunk
+        name_chunks = [
+            kw
+            for kw in all_kwargs
+            if "function_call" in kw and "name" in kw["function_call"]
+        ]
+        parsed_chunks = [
+            kw
+            for kw in all_kwargs
+            if "function_call" in kw and "parsed" in kw["function_call"]
+        ]
+        assert len(name_chunks) >= 1
+        assert len(parsed_chunks) == 1
+        assert parsed_chunks[0]["function_call"]["parsed"] == {"key": "value"}
+
+    def test_stream_chunk_position_last_no_additional_kwargs(self) -> None:
+        """Test _stream chunk_position on last chunk when no additional_kwargs."""
+        messages = iter([AIMessage(content="hi there")])
+        model = GenericFakeChatModel(messages=messages)
+        chunks = list(model.stream("prompt"))
+        # re.split(r"(\s)", "hi there") -> ["hi", " ", "there"]
+        assert len(chunks) == 3
+        # Only the last chunk should have chunk_position="last"
+        assert chunks[0].chunk_position is None
+        assert chunks[1].chunk_position is None
+        assert chunks[2].chunk_position == "last"
+
+    def test_stream_with_run_manager_callback(self) -> None:
+        """Test _stream calls on_llm_new_token via run_manager."""
+        messages = iter([AIMessage(content="hello world")])
+        model = GenericFakeChatModel(messages=messages)
+
+        # Create a mock run_manager
+        run_manager = MagicMock(spec=CallbackManagerForLLMRun)
+
+        chunks = list(
+            model._stream([HumanMessage(content="prompt")], run_manager=run_manager)
+        )
+        # re.split(r"(\s)", "hello world") -> ["hello", " ", "world"]
+        assert len(chunks) == 3
+
+        # Verify on_llm_new_token was called for each chunk
+        assert run_manager.on_llm_new_token.call_count == 3
+        # Verify the tokens passed to on_llm_new_token
+        tokens = [call.args[0] for call in run_manager.on_llm_new_token.call_args_list]
+        assert tokens == ["hello", " ", "world"]
+
+    def test_stream_with_content_and_additional_kwargs(self) -> None:
+        """Test _stream with both content and additional_kwargs generates chunks."""
+        message = AIMessage(
+            content="hello",
+            additional_kwargs={"custom_key": "custom_value"},
+        )
+        messages = iter([message])
+        model = GenericFakeChatModel(messages=messages)
+        chunks = list(model.stream("prompt"))
+
+        # Content "hello" is a single word, so 1 content chunk
+        # Plus 1 chunk for additional_kwargs
+        assert len(chunks) >= 2
+
+        # Verify content chunk(s)
+        content_chunks = [c for c in chunks if c.content]
+        assert len(content_chunks) >= 1
+        assert "".join(str(c.content) for c in content_chunks) == "hello"
+
+        # Verify additional_kwargs chunk
+        kwargs_chunks = [c for c in chunks if c.additional_kwargs]
+        assert len(kwargs_chunks) == 1
+        assert kwargs_chunks[0].additional_kwargs == {"custom_key": "custom_value"}
+
+        # Content chunk should NOT have chunk_position="last" since there are
+        # additional_kwargs following
+        last_content_chunk = content_chunks[-1]
+        assert last_content_chunk.chunk_position is None
+
+
+class TestParrotFakeChatModelAdditional:
+    """Additional tests for ParrotFakeChatModel class."""
+
+    def test_generate_with_multiple_messages_returns_last(self) -> None:
+        """Test _generate with multiple messages returns the last one."""
+        model = ParrotFakeChatModel()
+        messages = [
+            SystemMessage(content="system prompt"),
+            HumanMessage(content="first human"),
+            HumanMessage(content="second human"),
+            HumanMessage(content="last human"),
+        ]
+        result = model._generate(messages)
+        assert len(result.generations) == 1
+        assert result.generations[0].message.content == "last human"
+
+    async def test_ainvoke_with_string(self) -> None:
+        """Test ainvoke with string input echoes back the string."""
+        model = ParrotFakeChatModel()
+        result = await model.ainvoke("echo this string")
+        assert result.content == "echo this string"
