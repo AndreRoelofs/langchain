@@ -3,8 +3,8 @@
 import pytest
 
 from langchain_core.load import dumpd, load
-from langchain_core.messages.system import SystemMessage, SystemMessageChunk
 from langchain_core.messages.human import HumanMessageChunk
+from langchain_core.messages.system import SystemMessage, SystemMessageChunk
 
 
 class TestSystemMessage:
@@ -89,7 +89,10 @@ class TestSystemMessage:
     def test_text_property_list_content(self) -> None:
         """Test .text property with list content."""
         msg = SystemMessage(
-            content=[{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}]
+            content=[
+                {"type": "text", "text": "Part 1"},
+                {"type": "text", "text": "Part 2"},
+            ]
         )
         assert msg.text == "Part 1Part 2"
 
@@ -202,8 +205,12 @@ class TestSystemMessageChunk:
 
     def test_add_with_list_content_with_index(self) -> None:
         """Test adding chunks with list content that have matching index keys."""
-        chunk1 = SystemMessageChunk(content=[{"type": "text", "text": "Hello", "index": 0}])
-        chunk2 = SystemMessageChunk(content=[{"type": "text", "text": " world", "index": 0}])
+        chunk1 = SystemMessageChunk(
+            content=[{"type": "text", "text": "Hello", "index": 0}]
+        )
+        chunk2 = SystemMessageChunk(
+            content=[{"type": "text", "text": " world", "index": 0}]
+        )
         result = chunk1 + chunk2
         assert isinstance(result.content, list)
         # Items with same 'index' key are merged
@@ -313,3 +320,121 @@ class TestSystemMessageDeveloperRole:
 
         assert "__openai_role__" not in system_msg.additional_kwargs
         assert developer_msg.additional_kwargs["__openai_role__"] == "developer"
+
+
+class TestSystemMessageModelDumpSnapshot:
+    """Tests for SystemMessage model_dump snapshot verification."""
+
+    def test_model_dump_exact_keys_and_values(self) -> None:
+        """Test that model_dump() returns exact expected keys and values."""
+        msg = SystemMessage(content="Be helpful", id="sys-001", name="prompt")
+        dumped = msg.model_dump()
+        assert dumped["content"] == "Be helpful"
+        assert dumped["type"] == "system"
+        assert dumped["name"] == "prompt"
+        assert dumped["id"] == "sys-001"
+        assert dumped["additional_kwargs"] == {}
+        assert dumped["response_metadata"] == {}
+
+    def test_model_dump_default_values(self) -> None:
+        """Test that model_dump() has correct defaults for minimal message."""
+        msg = SystemMessage(content="Instructions")
+        dumped = msg.model_dump()
+        assert dumped["content"] == "Instructions"
+        assert dumped["type"] == "system"
+        assert dumped["name"] is None
+        assert dumped["id"] is None
+        assert dumped["additional_kwargs"] == {}
+        assert dumped["response_metadata"] == {}
+
+
+class TestSystemMessageChunkContentBlocksEmpty:
+    """Tests for SystemMessageChunk content_blocks with empty content."""
+
+    def test_content_blocks_empty_string(self) -> None:
+        """Test content_blocks with empty string content."""
+        chunk = SystemMessageChunk(content="")
+        blocks = chunk.content_blocks
+        assert blocks == []
+
+    def test_content_blocks_empty_list(self) -> None:
+        """Test content_blocks with empty list content."""
+        chunk = SystemMessageChunk(content=[])
+        blocks = chunk.content_blocks
+        assert blocks == []
+
+
+class TestSystemMessageContentBlocksInit:
+    """Tests for SystemMessage init with content_blocks parameter."""
+
+    def test_init_with_content_blocks_sets_content(self) -> None:
+        """Test that content_blocks parameter sets content equal to blocks."""
+        blocks = [
+            {"type": "text", "text": "First instruction"},
+            {"type": "text", "text": "Second instruction"},
+        ]
+        msg = SystemMessage(content_blocks=blocks)
+        assert msg.content == blocks
+
+    def test_content_blocks_roundtrip(self) -> None:
+        """Test that content_blocks init produces correct content_blocks property."""
+        blocks = [
+            {"type": "text", "text": "Rule 1"},
+            {"type": "text", "text": "Rule 2"},
+        ]
+        msg = SystemMessage(content_blocks=blocks)
+        result_blocks = msg.content_blocks
+        assert len(result_blocks) == 2
+        assert result_blocks[0]["text"] == "Rule 1"
+        assert result_blocks[1]["text"] == "Rule 2"
+
+
+class TestSystemMessageEquality:
+    """Tests for SystemMessage equality comparison."""
+
+    def test_same_content_messages_are_equal(self) -> None:
+        """Test that two SystemMessages with same content are equal."""
+        msg1 = SystemMessage(content="Be helpful")
+        msg2 = SystemMessage(content="Be helpful")
+        assert msg1 == msg2
+
+    def test_different_content_messages_are_not_equal(self) -> None:
+        """Test that two SystemMessages with different content are not equal."""
+        msg1 = SystemMessage(content="Be helpful")
+        msg2 = SystemMessage(content="Be concise")
+        assert msg1 != msg2
+
+    def test_same_content_different_id_are_not_equal(self) -> None:
+        """Test that messages with same content but different IDs are not equal."""
+        msg1 = SystemMessage(content="Instructions", id="1")
+        msg2 = SystemMessage(content="Instructions", id="2")
+        assert msg1 != msg2
+
+    def test_same_content_and_metadata_are_equal(self) -> None:
+        """Test that messages with same content and metadata are equal."""
+        msg1 = SystemMessage(content="Instructions", name="sys", id="sys-1")
+        msg2 = SystemMessage(content="Instructions", name="sys", id="sys-1")
+        assert msg1 == msg2
+
+
+class TestSystemMessageSerializableNamespace:
+    """Tests for SystemMessage is_lc_serializable and get_lc_namespace."""
+
+    def test_is_lc_serializable(self) -> None:
+        """Test that SystemMessage is LangChain serializable."""
+        assert SystemMessage.is_lc_serializable() is True
+
+    def test_get_lc_namespace(self) -> None:
+        """Test that SystemMessage returns correct LangChain namespace."""
+        namespace = SystemMessage.get_lc_namespace()
+        assert namespace == ["langchain", "schema", "messages"]
+
+    def test_instance_is_lc_serializable(self) -> None:
+        """Test is_lc_serializable on an instance."""
+        msg = SystemMessage(content="Instructions")
+        assert msg.is_lc_serializable() is True
+
+    def test_instance_get_lc_namespace(self) -> None:
+        """Test get_lc_namespace on an instance."""
+        msg = SystemMessage(content="Instructions")
+        assert msg.get_lc_namespace() == ["langchain", "schema", "messages"]

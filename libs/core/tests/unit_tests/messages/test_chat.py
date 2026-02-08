@@ -3,8 +3,8 @@
 import pytest
 
 from langchain_core.load import dumpd, load
-from langchain_core.messages.chat import ChatMessage, ChatMessageChunk
 from langchain_core.messages.base import BaseMessageChunk
+from langchain_core.messages.chat import ChatMessage, ChatMessageChunk
 from langchain_core.messages.human import HumanMessageChunk
 
 
@@ -94,7 +94,10 @@ class TestChatMessage:
     def test_text_property_list_content(self) -> None:
         """Test .text property with list content."""
         msg = ChatMessage(
-            content=[{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}],
+            content=[
+                {"type": "text", "text": "Part 1"},
+                {"type": "text", "text": "Part 2"},
+            ],
             role="user",
         )
         assert msg.text == "Part 1Part 2"
@@ -285,3 +288,150 @@ class TestChatMessageChunk:
         assert len(blocks) == 1
         assert blocks[0]["type"] == "text"
         assert blocks[0]["text"] == "Hello"
+
+
+class TestChatMessageContentBlocksMixedTypes:
+    """Tests for ChatMessage content_blocks with mixed content types."""
+
+    def test_content_blocks_with_mixed_list_content(self) -> None:
+        """Test content_blocks with list content containing mixed types."""
+        content = [
+            {"type": "text", "text": "Hello"},
+            {"type": "image", "source_media_type": "image/png", "source_data": "abc"},
+        ]
+        msg = ChatMessage(content=content, role="user")
+        blocks = msg.content_blocks
+        assert len(blocks) == 2
+        assert blocks[0]["type"] == "text"
+        assert blocks[0]["text"] == "Hello"
+        assert blocks[1]["type"] == "image"
+
+
+class TestChatMessageModelDump:
+    """Tests for ChatMessage model_dump including role field."""
+
+    def test_model_dump_includes_role(self) -> None:
+        """Test that model_dump() output includes the role field."""
+        msg = ChatMessage(content="Hello", role="moderator")
+        dumped = msg.model_dump()
+        assert "role" in dumped
+        assert dumped["role"] == "moderator"
+        assert dumped["content"] == "Hello"
+        assert dumped["type"] == "chat"
+        assert "additional_kwargs" in dumped
+        assert "response_metadata" in dumped
+
+    def test_model_dump_all_fields(self) -> None:
+        """Test that model_dump() includes all expected fields."""
+        msg = ChatMessage(
+            content="Test",
+            role="custom",
+            name="speaker",
+            id="chat-456",
+            additional_kwargs={"key": "val"},
+            response_metadata={"meta": "data"},
+        )
+        dumped = msg.model_dump()
+        assert dumped["role"] == "custom"
+        assert dumped["name"] == "speaker"
+        assert dumped["id"] == "chat-456"
+        assert dumped["additional_kwargs"] == {"key": "val"}
+        assert dumped["response_metadata"] == {"meta": "data"}
+
+
+class TestChatMessageChunkAddMultiple:
+    """Tests for ChatMessageChunk adding multiple chunks sequentially."""
+
+    def test_add_multiple_chat_chunks_chained(self) -> None:
+        """Test chaining addition of multiple ChatMessageChunks."""
+        chunk1 = ChatMessageChunk(content="a", role="user", id="1")
+        chunk2 = ChatMessageChunk(content="b", role="user")
+        chunk3 = ChatMessageChunk(content="c", role="user")
+        chunk4 = ChatMessageChunk(content="d", role="user")
+        result = chunk1 + chunk2 + chunk3 + chunk4
+        assert isinstance(result, ChatMessageChunk)
+        assert result.content == "abcd"
+        assert result.role == "user"
+        assert result.id == "1"
+
+    def test_add_multiple_mixed_chunks_chained(self) -> None:
+        """Test chaining addition with different chunk types."""
+        chunk1 = ChatMessageChunk(content="Hello", role="user", id="1")
+        chunk2 = HumanMessageChunk(content=" from")
+        chunk3 = ChatMessageChunk(content=" world", role="user")
+        result = chunk1 + chunk2 + chunk3
+        assert isinstance(result, ChatMessageChunk)
+        assert result.content == "Hello from world"
+        assert result.id == "1"
+
+    def test_add_accumulates_additional_kwargs(self) -> None:
+        """Test that chaining chunks accumulates additional_kwargs."""
+        chunk1 = ChatMessageChunk(
+            content="a", role="user", additional_kwargs={"k1": "v1"}
+        )
+        chunk2 = ChatMessageChunk(
+            content="b", role="user", additional_kwargs={"k2": "v2"}
+        )
+        chunk3 = ChatMessageChunk(
+            content="c", role="user", additional_kwargs={"k3": "v3"}
+        )
+        result = chunk1 + chunk2 + chunk3
+        assert result.content == "abc"
+        assert result.additional_kwargs["k1"] == "v1"
+        assert result.additional_kwargs["k2"] == "v2"
+        assert result.additional_kwargs["k3"] == "v3"
+
+
+class TestChatMessagePrettyReprHtml:
+    """Tests for ChatMessage pretty_repr with html=True."""
+
+    def test_pretty_repr_html_true(self) -> None:
+        """Test pretty_repr with html=True includes bold formatting."""
+        msg = ChatMessage(content="Hello", role="user")
+        result = msg.pretty_repr(html=True)
+        assert "Chat Message" in result
+        assert "Hello" in result
+        # When html=True, bold=True is passed to get_msg_title_repr,
+        # which calls get_bolded_text, wrapping the title in bold markers.
+        assert (
+            "\x1b[1m" in result
+            or "<b>" in result
+            or result != msg.pretty_repr(html=False)
+        )
+
+    def test_pretty_repr_html_false(self) -> None:
+        """Test pretty_repr with html=False is plain text."""
+        msg = ChatMessage(content="Hello", role="user")
+        result_html = msg.pretty_repr(html=True)
+        result_plain = msg.pretty_repr(html=False)
+        # Both contain the content, but the html version has formatting
+        assert "Hello" in result_html
+        assert "Hello" in result_plain
+
+
+class TestChatMessageContentBlocksInit:
+    """Tests for ChatMessage init with content_blocks parameter via BaseMessage."""
+
+    def test_init_with_content_blocks(self) -> None:
+        """Test ChatMessage can be initialized with content_blocks parameter."""
+        blocks = [
+            {"type": "text", "text": "Hello"},
+            {"type": "text", "text": " world"},
+        ]
+        msg = ChatMessage(content_blocks=blocks, role="user")
+        assert msg.content == blocks
+        assert msg.role == "user"
+
+    def test_content_blocks_roundtrip(self) -> None:
+        """Test that content_blocks init produces correct content_blocks property."""
+        blocks = [
+            {"type": "text", "text": "First"},
+            {"type": "text", "text": "Second"},
+        ]
+        msg = ChatMessage(content_blocks=blocks, role="assistant")
+        result_blocks = msg.content_blocks
+        assert len(result_blocks) == 2
+        assert result_blocks[0]["type"] == "text"
+        assert result_blocks[0]["text"] == "First"
+        assert result_blocks[1]["type"] == "text"
+        assert result_blocks[1]["text"] == "Second"

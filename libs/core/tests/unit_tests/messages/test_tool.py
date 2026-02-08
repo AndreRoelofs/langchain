@@ -7,16 +7,16 @@ import pytest
 
 from langchain_core.load import dumpd, load
 from langchain_core.messages.tool import (
-    ToolMessage,
-    ToolMessageChunk,
     ToolCall,
     ToolCallChunk,
+    ToolMessage,
+    ToolMessageChunk,
     ToolOutputMixin,
+    default_tool_chunk_parser,
+    default_tool_parser,
+    invalid_tool_call,
     tool_call,
     tool_call_chunk,
-    invalid_tool_call,
-    default_tool_parser,
-    default_tool_chunk_parser,
 )
 
 
@@ -44,7 +44,9 @@ class TestToolMessage:
     def test_init_with_artifact(self) -> None:
         """Test ToolMessage with artifact."""
         artifact = {"image": "base64_data", "metadata": {"width": 100}}
-        msg = ToolMessage(content="Image generated", tool_call_id="call-123", artifact=artifact)
+        msg = ToolMessage(
+            content="Image generated", tool_call_id="call-123", artifact=artifact
+        )
         assert msg.artifact == artifact
 
     def test_init_with_status_success(self) -> None:
@@ -54,7 +56,9 @@ class TestToolMessage:
 
     def test_init_with_status_error(self) -> None:
         """Test ToolMessage with error status."""
-        msg = ToolMessage(content="Error: Division by zero", tool_call_id="call-123", status="error")
+        msg = ToolMessage(
+            content="Error: Division by zero", tool_call_id="call-123", status="error"
+        )
         assert msg.status == "error"
 
     def test_init_with_list_content(self) -> None:
@@ -80,7 +84,9 @@ class TestToolMessage:
     def test_tool_call_id_coerced_to_string(self) -> None:
         """Test that tool_call_id is coerced to string."""
         # UUID type
-        msg1 = ToolMessage(content="Result", tool_call_id=UUID("12345678-1234-5678-1234-567812345678"))
+        msg1 = ToolMessage(
+            content="Result", tool_call_id=UUID("12345678-1234-5678-1234-567812345678")
+        )
         assert isinstance(msg1.tool_call_id, str)
 
         # Integer type
@@ -127,7 +133,10 @@ class TestToolMessage:
     def test_text_property_list_content(self) -> None:
         """Test .text property with list content."""
         msg = ToolMessage(
-            content=[{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}],
+            content=[
+                {"type": "text", "text": "Part 1"},
+                {"type": "text", "text": "Part 2"},
+            ],
             tool_call_id="call-123",
         )
         assert msg.text == "Part 1Part 2"
@@ -343,7 +352,9 @@ class TestToolCallChunkFactory:
 
     def test_basic_tool_call_chunk(self) -> None:
         """Test creating a basic tool call chunk."""
-        tc = tool_call_chunk(name="test_tool", args='{"param": "value"}', id="call-123", index=0)
+        tc = tool_call_chunk(
+            name="test_tool", args='{"param": "value"}', id="call-123", index=0
+        )
         assert tc["name"] == "test_tool"
         assert tc["args"] == '{"param": "value"}'
         assert tc["id"] == "call-123"
@@ -584,6 +595,7 @@ class TestToolOutputMixin:
 
     def test_custom_class_with_mixin(self) -> None:
         """Test that custom classes can use ToolOutputMixin."""
+
         class CustomToolOutput(ToolOutputMixin):
             def __init__(self, result: str) -> None:
                 self.result = result
@@ -644,3 +656,373 @@ class TestToolCallChunkTypedDict:
             "type": "tool_call_chunk",
         }
         assert tc["type"] == "tool_call_chunk"
+
+
+class TestMergeStatus:
+    """Tests for the _merge_status helper function."""
+
+    def test_success_plus_success(self) -> None:
+        """Test that merging two success statuses returns success."""
+        from langchain_core.messages.tool import _merge_status
+
+        result = _merge_status("success", "success")
+        assert result == "success"
+
+    def test_error_plus_success(self) -> None:
+        """Test that merging error + success returns error."""
+        from langchain_core.messages.tool import _merge_status
+
+        result = _merge_status("error", "success")
+        assert result == "error"
+
+    def test_success_plus_error(self) -> None:
+        """Test that merging success + error returns error."""
+        from langchain_core.messages.tool import _merge_status
+
+        result = _merge_status("success", "error")
+        assert result == "error"
+
+    def test_error_plus_error(self) -> None:
+        """Test that merging two error statuses returns error."""
+        from langchain_core.messages.tool import _merge_status
+
+        result = _merge_status("error", "error")
+        assert result == "error"
+
+
+class TestToolMessageContentCoercion:
+    """Tests for ToolMessage content coercion edge cases."""
+
+    def test_tuple_content_converted_to_list(self) -> None:
+        """Test that tuple content is converted to a list preserving items."""
+        msg = ToolMessage(
+            content=("first", {"type": "text", "text": "second"}),  # type: ignore[arg-type]
+            tool_call_id="call-100",
+        )
+        assert isinstance(msg.content, list)
+        assert msg.content == ["first", {"type": "text", "text": "second"}]
+
+    def test_list_with_non_string_non_dict_items_coerced_to_strings(self) -> None:
+        """Test that list items that are not str or dict are coerced to strings."""
+        msg = ToolMessage(
+            content=[42, True, 3.14, None],  # type: ignore[list-item]
+            tool_call_id="call-200",
+        )
+        assert isinstance(msg.content, list)
+        assert msg.content == ["42", "True", "3.14", "None"]
+
+    def test_non_string_non_list_content_coerced_to_string(self) -> None:
+        """Test that content that is neither str nor list is coerced to str."""
+        msg_int = ToolMessage(content=99, tool_call_id="call-300")  # type: ignore[arg-type]
+        assert msg_int.content == "99"
+
+        msg_float = ToolMessage(content=2.718, tool_call_id="call-301")  # type: ignore[arg-type]
+        assert msg_float.content == "2.718"
+
+        msg_bool = ToolMessage(content=False, tool_call_id="call-302")  # type: ignore[arg-type]
+        assert msg_bool.content == "False"
+
+        msg_dict = ToolMessage(content={"key": "val"}, tool_call_id="call-303")  # type: ignore[arg-type]
+        assert msg_dict.content == "{'key': 'val'}"
+
+    def test_empty_string_content(self) -> None:
+        """Test ToolMessage with empty string content."""
+        msg = ToolMessage(content="", tool_call_id="call-400")
+        assert msg.content == ""
+        assert msg.tool_call_id == "call-400"
+        assert msg.status == "success"
+        assert msg.type == "tool"
+
+
+class TestToolMessageContentBlocks:
+    """Tests for ToolMessage with content_blocks parameter."""
+
+    def test_content_blocks_sets_content(self) -> None:
+        """Test that content_blocks parameter populates the content field."""
+        blocks = [
+            {"type": "text", "text": "Hello from blocks"},
+            {"type": "text", "text": "Second block"},
+        ]
+        msg = ToolMessage(content_blocks=blocks, tool_call_id="call-500")
+        assert msg.content == blocks
+        assert msg.content[0] == {"type": "text", "text": "Hello from blocks"}
+        assert msg.content[1] == {"type": "text", "text": "Second block"}
+
+    def test_content_blocks_single_block(self) -> None:
+        """Test content_blocks with a single content block."""
+        blocks = [{"type": "text", "text": "Only block"}]
+        msg = ToolMessage(content_blocks=blocks, tool_call_id="call-501")
+        assert len(msg.content) == 1
+        assert msg.content[0] == {"type": "text", "text": "Only block"}
+
+
+class TestToolMessageSerializationWithArtifactAndError:
+    """Tests for ToolMessage serialization with artifact and status=error."""
+
+    def test_serialization_roundtrip_with_artifact_and_error_status(self) -> None:
+        """Test serialization roundtrip preserves artifact and error status."""
+        artifact_data = {"raw_output": "traceback info", "exit_code": 1}
+        msg = ToolMessage(
+            content="Tool execution failed",
+            tool_call_id="call-600",
+            name="failing_tool",
+            artifact=artifact_data,
+            status="error",
+            id="msg-600",
+        )
+        dumped = dumpd(msg)
+
+        assert dumped["type"] == "constructor"
+        assert dumped["id"] == ["langchain", "schema", "messages", "ToolMessage"]
+
+        loaded = load(dumped)
+        assert isinstance(loaded, ToolMessage)
+        assert loaded.content == "Tool execution failed"
+        assert loaded.tool_call_id == "call-600"
+        assert loaded.name == "failing_tool"
+        assert loaded.artifact == artifact_data
+        assert loaded.status == "error"
+        assert loaded.id == "msg-600"
+
+
+class TestToolMessageChunkAddExtended:
+    """Extended tests for ToolMessageChunk __add__ behavior."""
+
+    def test_both_success_statuses_result_in_success(self) -> None:
+        """Test adding two chunks with success status produces success."""
+        chunk1 = ToolMessageChunk(
+            content="Part A",
+            tool_call_id="call-700",
+            status="success",
+        )
+        chunk2 = ToolMessageChunk(
+            content=" Part B",
+            tool_call_id="call-700",
+            status="success",
+        )
+        result = chunk1 + chunk2
+        assert isinstance(result, ToolMessageChunk)
+        assert result.status == "success"
+        assert result.content == "Part A Part B"
+
+    def test_tool_call_id_preserved_from_first_chunk(self) -> None:
+        """Test that adding chunks preserves tool_call_id from the first chunk."""
+        chunk1 = ToolMessageChunk(
+            content="Hello",
+            tool_call_id="call-800",
+            id="chunk-first",
+        )
+        chunk2 = ToolMessageChunk(
+            content=" World",
+            tool_call_id="call-800",
+            id="chunk-second",
+        )
+        result = chunk1 + chunk2
+        assert result.tool_call_id == "call-800"
+        assert result.id == "chunk-first"
+
+    def test_list_content_with_index_merging(self) -> None:
+        """Test adding chunks with list content using index-based merging."""
+        chunk1 = ToolMessageChunk(
+            content=[
+                {"type": "text", "text": "alpha", "index": 0},
+                {"type": "text", "text": "beta", "index": 1},
+            ],
+            tool_call_id="call-900",
+        )
+        chunk2 = ToolMessageChunk(
+            content=[
+                {"type": "text", "text": "-more", "index": 0},
+                {"type": "text", "text": "-extra", "index": 1},
+            ],
+            tool_call_id="call-900",
+        )
+        result = chunk1 + chunk2
+        assert isinstance(result, ToolMessageChunk)
+        assert isinstance(result.content, list)
+        assert len(result.content) == 2
+        assert result.content[0]["text"] == "alpha-more"
+        assert result.content[0]["index"] == 0
+        assert result.content[1]["text"] == "beta-extra"
+        assert result.content[1]["index"] == 1
+
+    def test_fallback_to_base_message_chunk_add_for_different_chunk_types(
+        self,
+    ) -> None:
+        """Test that adding a non-ToolMessageChunk falls back to BaseMessageChunk.__add__.
+
+        The base class __add__ attempts to reconstruct via self.__class__() but
+        does not pass tool_call_id, so this raises a KeyError from the
+        ToolMessage model validator.
+        """
+        from langchain_core.messages.human import HumanMessageChunk
+
+        tool_chunk = ToolMessageChunk(
+            content="tool output",
+            tool_call_id="call-1000",
+        )
+        human_chunk = HumanMessageChunk(content=" from human")
+        # Falls back to BaseMessageChunk.__add__, which calls self.__class__()
+        # without tool_call_id, causing a KeyError in coerce_args validator
+        with pytest.raises(KeyError, match="tool_call_id"):
+            tool_chunk + human_chunk
+
+
+class TestDefaultToolParserExtended:
+    """Extended tests for default_tool_parser edge cases."""
+
+    def test_tool_call_with_no_id_field(self) -> None:
+        """Test parsing a tool call that has no id field uses None."""
+        raw_calls = [
+            {
+                "function": {
+                    "name": "lookup",
+                    "arguments": '{"term": "python"}',
+                },
+            },
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+        assert len(tool_calls) == 1
+        assert len(invalid_calls) == 0
+        assert tool_calls[0]["name"] == "lookup"
+        assert tool_calls[0]["args"] == {"term": "python"}
+        assert tool_calls[0]["id"] is None
+
+    def test_empty_function_args_string(self) -> None:
+        """Test parsing with empty string arguments (valid JSON empty string is not valid)."""
+        raw_calls = [
+            {
+                "id": "call-a",
+                "function": {
+                    "name": "no_args",
+                    "arguments": "",
+                },
+            },
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+        # Empty string is not valid JSON, so it should be an invalid tool call
+        assert len(tool_calls) == 0
+        assert len(invalid_calls) == 1
+        assert invalid_calls[0]["name"] == "no_args"
+        assert invalid_calls[0]["args"] == ""
+        assert invalid_calls[0]["id"] == "call-a"
+
+    def test_null_function_args(self) -> None:
+        """Test parsing with null JSON arguments results in empty dict args."""
+        raw_calls = [
+            {
+                "id": "call-b",
+                "function": {
+                    "name": "null_args_tool",
+                    "arguments": "null",
+                },
+            },
+        ]
+        tool_calls, invalid_calls = default_tool_parser(raw_calls)
+        # json.loads("null") returns None, then `function_args or {}` yields {}
+        assert len(tool_calls) == 1
+        assert len(invalid_calls) == 0
+        assert tool_calls[0]["name"] == "null_args_tool"
+        assert tool_calls[0]["args"] == {}
+        assert tool_calls[0]["id"] == "call-b"
+
+
+class TestDefaultToolChunkParserExtended:
+    """Extended tests for default_tool_chunk_parser edge cases."""
+
+    def test_tool_calls_with_function_name_none(self) -> None:
+        """Test parsing chunks where function.name is None (continuation chunks)."""
+        raw_calls = [
+            {
+                "id": None,
+                "index": 0,
+                "function": {
+                    "name": None,
+                    "arguments": '"continued"}',
+                },
+            },
+        ]
+        chunks = default_tool_chunk_parser(raw_calls)
+        assert len(chunks) == 1
+        assert chunks[0]["name"] is None
+        assert chunks[0]["args"] == '"continued"}'
+        assert chunks[0]["id"] is None
+        assert chunks[0]["index"] == 0
+        assert chunks[0]["type"] == "tool_call_chunk"
+
+
+class TestToolMessageFieldDefaults:
+    """Tests for ToolMessage field default values and repr settings."""
+
+    def test_additional_kwargs_default_is_empty_dict(self) -> None:
+        """Test that additional_kwargs defaults to an empty dict."""
+        msg = ToolMessage(content="test", tool_call_id="call-1100")
+        assert msg.additional_kwargs == {}
+        assert isinstance(msg.additional_kwargs, dict)
+
+    def test_response_metadata_default_is_empty_dict(self) -> None:
+        """Test that response_metadata defaults to an empty dict."""
+        msg = ToolMessage(content="test", tool_call_id="call-1200")
+        assert msg.response_metadata == {}
+        assert isinstance(msg.response_metadata, dict)
+
+    def test_additional_kwargs_and_response_metadata_not_in_repr(self) -> None:
+        """Test that additional_kwargs and response_metadata with repr=False are excluded from repr."""
+        msg = ToolMessage(content="test", tool_call_id="call-1300")
+        msg_repr = repr(msg)
+        assert "additional_kwargs" not in msg_repr
+        assert "response_metadata" not in msg_repr
+
+    def test_additional_kwargs_and_response_metadata_repr_false_with_values(
+        self,
+    ) -> None:
+        """Test that even when populated, repr=False fields are excluded from repr."""
+        msg = ToolMessage(
+            content="test",
+            tool_call_id="call-1301",
+            additional_kwargs={"custom": "value"},
+            response_metadata={"meta": "data"},
+        )
+        msg_repr = repr(msg)
+        assert "additional_kwargs" not in msg_repr
+        assert "response_metadata" not in msg_repr
+        # But they are still accessible
+        assert msg.additional_kwargs == {"custom": "value"}
+        assert msg.response_metadata == {"meta": "data"}
+
+
+class TestToolMessagePrettyReprExtended:
+    """Extended tests for ToolMessage pretty_repr output."""
+
+    def test_pretty_repr_includes_tool_name(self) -> None:
+        """Test that pretty_repr includes the tool name when provided."""
+        msg = ToolMessage(
+            content="42",
+            tool_call_id="call-1400",
+            name="calculator",
+        )
+        result = msg.pretty_repr()
+        assert "Tool Message" in result
+        assert "Name: calculator" in result
+        assert "42" in result
+
+    def test_pretty_repr_without_name(self) -> None:
+        """Test pretty_repr without a tool name."""
+        msg = ToolMessage(content="result data", tool_call_id="call-1500")
+        result = msg.pretty_repr()
+        assert "Tool Message" in result
+        assert "Name:" not in result
+        assert "result data" in result
+
+    def test_pretty_repr_with_error_content(self) -> None:
+        """Test pretty_repr renders error content correctly."""
+        msg = ToolMessage(
+            content="Error: division by zero",
+            tool_call_id="call-1600",
+            name="math_tool",
+            status="error",
+        )
+        result = msg.pretty_repr()
+        assert "Tool Message" in result
+        assert "Name: math_tool" in result
+        assert "Error: division by zero" in result

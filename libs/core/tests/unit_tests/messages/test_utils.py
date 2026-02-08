@@ -11,6 +11,7 @@ from langchain_core.language_models.fake_chat_models import FakeChatModel
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
+    FunctionMessage,
     HumanMessage,
     SystemMessage,
     ToolCall,
@@ -1595,3 +1596,402 @@ def test_convert_to_openai_messages_reasoning_content() -> None:
         ],
     }
     assert mixed_result == expected_mixed
+
+
+# ---------------------------------------------------------------------------
+# message_chunk_to_message: converts chunk types to their non-chunk counterparts
+# ---------------------------------------------------------------------------
+
+
+def test_message_chunk_to_message_ai() -> None:
+    """AIMessageChunk should convert to AIMessage, dropping chunk-only fields."""
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.messages.utils import message_chunk_to_message
+
+    chunk = AIMessageChunk(
+        content="hello",
+        id="msg-1",
+        tool_call_chunks=[
+            {"name": "tool", "args": '{"x":1}', "id": "tc-1", "index": 0}
+        ],
+    )
+    result = message_chunk_to_message(chunk)
+    assert isinstance(result, AIMessage)
+    assert not isinstance(result, AIMessageChunk)
+    assert result.content == "hello"
+    assert result.id == "msg-1"
+    # tool_call_chunks should NOT be present on the resulting AIMessage
+    assert (
+        not hasattr(result, "tool_call_chunks")
+        or "tool_call_chunks" not in result.__dict__
+    )
+
+
+def test_message_chunk_to_message_human() -> None:
+    """HumanMessageChunk should convert to HumanMessage."""
+    from langchain_core.messages import HumanMessageChunk
+    from langchain_core.messages.utils import message_chunk_to_message
+
+    chunk = HumanMessageChunk(content="world", id="msg-2")
+    result = message_chunk_to_message(chunk)
+    assert isinstance(result, HumanMessage)
+    assert not isinstance(result, HumanMessageChunk)
+    assert result.content == "world"
+    assert result.id == "msg-2"
+
+
+def test_message_chunk_to_message_system() -> None:
+    """SystemMessageChunk should convert to SystemMessage."""
+    from langchain_core.messages import SystemMessageChunk
+    from langchain_core.messages.utils import message_chunk_to_message
+
+    chunk = SystemMessageChunk(content="be helpful", id="msg-3")
+    result = message_chunk_to_message(chunk)
+    assert isinstance(result, SystemMessage)
+    assert not isinstance(result, SystemMessageChunk)
+    assert result.content == "be helpful"
+    assert result.id == "msg-3"
+
+
+def test_message_chunk_to_message_tool() -> None:
+    """ToolMessageChunk should convert to ToolMessage."""
+    from langchain_core.messages import ToolMessageChunk
+    from langchain_core.messages.utils import message_chunk_to_message
+
+    chunk = ToolMessageChunk(
+        content="result-data", tool_call_id="tc-99", name="my_tool", id="msg-4"
+    )
+    result = message_chunk_to_message(chunk)
+    assert isinstance(result, ToolMessage)
+    assert not isinstance(result, ToolMessageChunk)
+    assert result.content == "result-data"
+    assert result.tool_call_id == "tc-99"
+    assert result.name == "my_tool"
+    assert result.id == "msg-4"
+
+
+def test_message_chunk_to_message_function() -> None:
+    """FunctionMessageChunk should convert to FunctionMessage."""
+    from langchain_core.messages import FunctionMessageChunk
+    from langchain_core.messages.utils import message_chunk_to_message
+
+    chunk = FunctionMessageChunk(content="fn-result", name="my_fn", id="msg-5")
+    result = message_chunk_to_message(chunk)
+    assert isinstance(result, FunctionMessage)
+    assert not isinstance(result, FunctionMessageChunk)
+    assert result.content == "fn-result"
+    assert result.name == "my_fn"
+    assert result.id == "msg-5"
+
+
+def test_message_chunk_to_message_chat() -> None:
+    """ChatMessageChunk should convert to ChatMessage."""
+    from langchain_core.messages import ChatMessage, ChatMessageChunk
+    from langchain_core.messages.utils import message_chunk_to_message
+
+    chunk = ChatMessageChunk(content="chat-text", role="custom_role", id="msg-6")
+    result = message_chunk_to_message(chunk)
+    assert isinstance(result, ChatMessage)
+    assert not isinstance(result, ChatMessageChunk)
+    assert result.content == "chat-text"
+    assert result.role == "custom_role"
+    assert result.id == "msg-6"
+
+
+# ---------------------------------------------------------------------------
+# messages_from_dict: round-trip with messages_to_dict
+# ---------------------------------------------------------------------------
+
+
+def test_messages_from_dict_round_trip() -> None:
+    """messages_to_dict -> messages_from_dict should reproduce the original messages."""
+    from langchain_core.messages.base import messages_to_dict
+    from langchain_core.messages.utils import messages_from_dict
+
+    original = [
+        SystemMessage(content="You are helpful.", id="s1"),
+        HumanMessage(content="Hi there!", id="h1", name="alice"),
+        AIMessage(
+            content="Hello!",
+            id="a1",
+            tool_calls=[
+                ToolCall(
+                    name="search", args={"q": "weather"}, id="tc1", type="tool_call"
+                )
+            ],
+        ),
+        ToolMessage(content="Sunny", tool_call_id="tc1", name="search", id="t1"),
+    ]
+
+    dicts = messages_to_dict(original)
+    assert isinstance(dicts, list)
+    assert all(isinstance(d, dict) for d in dicts)
+
+    restored = messages_from_dict(dicts)
+    assert len(restored) == len(original)
+    for orig, rest in zip(original, restored):
+        assert type(orig) is type(rest)
+        assert orig.content == rest.content
+        assert orig.id == rest.id
+        if hasattr(orig, "name"):
+            assert orig.name == rest.name
+        if isinstance(orig, AIMessage):
+            assert orig.tool_calls == rest.tool_calls
+        if isinstance(orig, ToolMessage):
+            assert orig.tool_call_id == rest.tool_call_id
+
+
+# ---------------------------------------------------------------------------
+# get_buffer_string: custom prefixes and special message types
+# ---------------------------------------------------------------------------
+
+
+def test_get_buffer_string_custom_human_and_ai_prefix() -> None:
+    """get_buffer_string should honour custom human_prefix and ai_prefix."""
+    messages = [
+        HumanMessage(content="Hello"),
+        AIMessage(content="Hi!"),
+        HumanMessage(content="How are you?"),
+    ]
+    result = get_buffer_string(messages, human_prefix="User", ai_prefix="Bot")
+    assert result == "User: Hello\nBot: Hi!\nUser: How are you?"
+
+
+def test_get_buffer_string_with_tool_messages() -> None:
+    """ToolMessages should appear with the 'Tool: ' prefix."""
+    messages = [
+        HumanMessage(content="What is the weather?"),
+        AIMessage(content="Let me check."),
+        ToolMessage(content="Sunny, 72F", tool_call_id="tc1"),
+    ]
+    result = get_buffer_string(messages)
+    assert result == (
+        "Human: What is the weather?\nAI: Let me check.\nTool: Sunny, 72F"
+    )
+
+
+def test_get_buffer_string_with_function_messages() -> None:
+    """FunctionMessages should appear with the 'Function: ' prefix."""
+    messages = [
+        HumanMessage(content="Compute"),
+        FunctionMessage(content="42", name="calculator"),
+    ]
+    result = get_buffer_string(messages)
+    assert result == "Human: Compute\nFunction: 42"
+
+
+# ---------------------------------------------------------------------------
+# AnyMessage discriminated union validation
+# ---------------------------------------------------------------------------
+
+
+def test_any_message_validates_ai_message() -> None:
+    """AnyMessage should accept a plain AIMessage."""
+    from pydantic import TypeAdapter
+
+    from langchain_core.messages.utils import AnyMessage
+
+    adapter = TypeAdapter(AnyMessage)
+    msg = AIMessage(content="hello from AI", id="ai-1")
+    validated = adapter.validate_python(msg)
+    assert isinstance(validated, AIMessage)
+    assert validated.content == "hello from AI"
+    assert validated.id == "ai-1"
+
+
+def test_any_message_validates_human_message() -> None:
+    """AnyMessage should accept a plain HumanMessage."""
+    from pydantic import TypeAdapter
+
+    from langchain_core.messages.utils import AnyMessage
+
+    adapter = TypeAdapter(AnyMessage)
+    msg = HumanMessage(content="hello from human", id="h-1")
+    validated = adapter.validate_python(msg)
+    assert isinstance(validated, HumanMessage)
+    assert validated.content == "hello from human"
+    assert validated.id == "h-1"
+
+
+def test_any_message_validates_tool_message() -> None:
+    """AnyMessage should accept a plain ToolMessage."""
+    from pydantic import TypeAdapter
+
+    from langchain_core.messages.utils import AnyMessage
+
+    adapter = TypeAdapter(AnyMessage)
+    msg = ToolMessage(content="tool output", tool_call_id="tc-1", id="t-1")
+    validated = adapter.validate_python(msg)
+    assert isinstance(validated, ToolMessage)
+    assert validated.content == "tool output"
+    assert validated.tool_call_id == "tc-1"
+    assert validated.id == "t-1"
+
+
+# ---------------------------------------------------------------------------
+# convert_to_messages: string input, tuple input, unsupported role
+# ---------------------------------------------------------------------------
+
+
+def test_convert_to_messages_string_input() -> None:
+    """A bare string should be converted to a HumanMessage."""
+    result = convert_to_messages(["Hello, world!"])
+    assert len(result) == 1
+    assert isinstance(result[0], HumanMessage)
+    assert result[0].content == "Hello, world!"
+
+
+def test_convert_to_messages_tuple_human() -> None:
+    """A ('human', text) tuple should become a HumanMessage."""
+    result = convert_to_messages([("human", "What is 2+2?")])
+    assert len(result) == 1
+    assert isinstance(result[0], HumanMessage)
+    assert result[0].content == "What is 2+2?"
+
+
+def test_convert_to_messages_unsupported_role_raises() -> None:
+    """An unsupported role string in a tuple should raise ValueError."""
+    with pytest.raises(ValueError, match="Unexpected message type"):
+        convert_to_messages([("alien", "take me to your leader")])
+
+
+# ---------------------------------------------------------------------------
+# merge_message_runs: alternating types and tool_calls preservation
+# ---------------------------------------------------------------------------
+
+
+def test_merge_message_runs_alternating_types_no_merge() -> None:
+    """Alternating message types should not be merged at all."""
+    messages = [
+        HumanMessage("first"),
+        AIMessage("second"),
+        HumanMessage("third"),
+        AIMessage("fourth"),
+    ]
+    messages_copy = [m.model_copy(deep=True) for m in messages]
+    result = merge_message_runs(messages)
+    assert result == messages
+    assert messages == messages_copy
+
+
+def test_merge_message_runs_preserves_tool_calls() -> None:
+    """When consecutive AI messages are merged, tool_calls must be preserved."""
+    messages = [
+        AIMessage(
+            "I will call tools.",
+            id="a1",
+            tool_calls=[
+                ToolCall(name="search", args={"q": "cats"}, id="tc1", type="tool_call"),
+            ],
+        ),
+        AIMessage(
+            "And more tools.",
+            id="a2",
+            tool_calls=[
+                ToolCall(name="calc", args={"x": 1}, id="tc2", type="tool_call"),
+            ],
+        ),
+    ]
+    messages_copy = [m.model_copy(deep=True) for m in messages]
+    result = merge_message_runs(messages)
+    assert len(result) == 1
+    merged = result[0]
+    assert isinstance(merged, AIMessage)
+    assert merged.id == "a1"
+    # Both sets of tool_calls should be present
+    assert len(merged.tool_calls) == 2
+    assert merged.tool_calls[0]["name"] == "search"
+    assert merged.tool_calls[0]["id"] == "tc1"
+    assert merged.tool_calls[1]["name"] == "calc"
+    assert merged.tool_calls[1]["id"] == "tc2"
+    assert messages == messages_copy
+
+
+# ---------------------------------------------------------------------------
+# filter_messages: include_types combined with include_names
+# ---------------------------------------------------------------------------
+
+
+def test_filter_messages_include_types_and_include_names_combined() -> None:
+    """When both include_types and include_names are given, messages matching
+    either condition should be included."""
+    messages = [
+        SystemMessage("sys", name="sys_name", id="1"),
+        HumanMessage("human msg", name="alice", id="2"),
+        AIMessage("ai msg", name="bot", id="3"),
+        HumanMessage("another human", name="bob", id="4"),
+    ]
+    # include_types=["system"] OR include_names=["alice"]
+    result = filter_messages(
+        messages, include_types=["system"], include_names=["alice"]
+    )
+    assert len(result) == 2
+    assert result[0] == messages[0]  # SystemMessage matched by type
+    assert result[1] == messages[1]  # HumanMessage matched by name "alice"
+
+
+# ---------------------------------------------------------------------------
+# trim_messages: strategy="last" without include_system
+# ---------------------------------------------------------------------------
+
+
+def test_trim_messages_last_without_include_system() -> None:
+    """strategy='last' without include_system should NOT keep the system message."""
+    messages = [
+        SystemMessage("System prompt"),
+        HumanMessage("first", id="h1"),
+        AIMessage("response", id="a1"),
+        HumanMessage("second", id="h2"),
+        AIMessage("response2", id="a2"),
+    ]
+    result = trim_messages(
+        messages,
+        max_tokens=20,
+        token_counter=dummy_token_counter,
+        strategy="last",
+    )
+    # With dummy_token_counter each msg is 10 tokens, so 20 tokens -> 2 messages
+    assert len(result) == 2
+    # Should be the last two messages (no system message preserved)
+    assert result[0].content == "second"
+    assert result[0].id == "h2"
+    assert result[1].content == "response2"
+    assert result[1].id == "a2"
+    # Ensure system message is NOT in the result
+    assert not any(isinstance(m, SystemMessage) for m in result)
+
+
+# ---------------------------------------------------------------------------
+# count_tokens_approximately: ToolMessage includes tool_call_id and name
+# ---------------------------------------------------------------------------
+
+
+def test_count_tokens_approximately_tool_message_includes_tool_call_id_and_name() -> (
+    None
+):
+    """For ToolMessage, the token count should include the tool_call_id and name."""
+    # Build a ToolMessage with known dimensions
+    msg = ToolMessage(
+        content="result",  # 6 chars
+        tool_call_id="call_1",  # 6 chars
+        name="my_tool",  # 7 chars
+    )
+    # role = "tool" -> 4 chars
+    # total chars = 6 (content) + 6 (tool_call_id) + 4 (role) + 7 (name) = 23 chars
+    # tokens = ceil(23 / 4) + 3 = 6 + 3 = 9
+    assert count_tokens_approximately([msg]) == 9
+
+    # Without name counting:
+    # total chars = 6 (content) + 6 (tool_call_id) + 4 (role) = 16 chars
+    # tokens = ceil(16 / 4) + 3 = 4 + 3 = 7
+    assert count_tokens_approximately([msg], count_name=False) == 7
+
+    # Compare with a HumanMessage (no tool_call_id) with same content length
+    human_msg = HumanMessage(content="result")
+    # role = "user" -> 4 chars
+    # total chars = 6 (content) + 4 (role) = 10
+    # tokens = ceil(10 / 4) + 3 = 3 + 3 = 6
+    assert count_tokens_approximately([human_msg]) == 6
+
+    # ToolMessage should always have more tokens than HumanMessage with same content
+    assert count_tokens_approximately([msg]) > count_tokens_approximately([human_msg])

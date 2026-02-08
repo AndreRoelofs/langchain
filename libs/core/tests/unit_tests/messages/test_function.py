@@ -3,8 +3,8 @@
 import pytest
 
 from langchain_core.load import dumpd, load
-from langchain_core.messages.function import FunctionMessage, FunctionMessageChunk
 from langchain_core.messages.base import BaseMessageChunk
+from langchain_core.messages.function import FunctionMessage, FunctionMessageChunk
 
 
 class TestFunctionMessage:
@@ -83,7 +83,10 @@ class TestFunctionMessage:
     def test_text_property_list_content(self) -> None:
         """Test .text property with list content."""
         msg = FunctionMessage(
-            content=[{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}],
+            content=[
+                {"type": "text", "text": "Part 1"},
+                {"type": "text", "text": "Part 2"},
+            ],
             name="func",
         )
         assert msg.text == "Part 1Part 2"
@@ -222,7 +225,12 @@ class TestFunctionMessageChunk:
         )
         dumped = dumpd(chunk)
         assert dumped["type"] == "constructor"
-        assert dumped["id"] == ["langchain", "schema", "messages", "FunctionMessageChunk"]
+        assert dumped["id"] == [
+            "langchain",
+            "schema",
+            "messages",
+            "FunctionMessageChunk",
+        ]
 
         loaded = load(dumped)
         assert isinstance(loaded, FunctionMessageChunk)
@@ -245,7 +253,6 @@ class TestFunctionMessageChunk:
         chunk2 = FunctionMessageChunk(content="", name="func")
         result = chunk1 + chunk2
         assert result.content == "Hello"
-
 
     def test_add_incompatible_type_raises_error(self) -> None:
         """Test that adding incompatible types raises TypeError."""
@@ -290,3 +297,168 @@ class TestFunctionMessageDeprecation:
         assert isinstance(loaded, FunctionMessage)
         assert loaded.content == "test"
         assert loaded.name == "test_func"
+
+
+class TestFunctionMessageModelDump:
+    """Tests for FunctionMessage model_dump snapshot."""
+
+    def test_model_dump_snapshot(self) -> None:
+        """Test FunctionMessage model_dump returns exact expected keys and values."""
+        msg = FunctionMessage(
+            content="Result: 42",
+            name="calculator",
+            id="func-snap",
+            additional_kwargs={"status": "ok"},
+            response_metadata={"model": "gpt-4"},
+        )
+        dumped = msg.model_dump()
+        assert dumped == {
+            "content": "Result: 42",
+            "name": "calculator",
+            "id": "func-snap",
+            "type": "function",
+            "additional_kwargs": {"status": "ok"},
+            "response_metadata": {"model": "gpt-4"},
+        }
+
+
+class TestFunctionMessageChunkAddList:
+    """Tests for FunctionMessageChunk adding with a list of chunks."""
+
+    def test_add_sequential_chunks(self) -> None:
+        """Test adding multiple FunctionMessageChunks sequentially."""
+        chunks = [
+            FunctionMessageChunk(content="a", name="func", id="id-1"),
+            FunctionMessageChunk(content="b", name="func"),
+            FunctionMessageChunk(content="c", name="func"),
+        ]
+        result = chunks[0]
+        for chunk in chunks[1:]:
+            result = result + chunk
+        assert isinstance(result, FunctionMessageChunk)
+        assert result.content == "abc"
+        assert result.name == "func"
+        assert result.id == "id-1"
+
+    def test_add_with_list_of_function_chunks_raises(self) -> None:
+        """Test that adding with a list of FunctionMessageChunks raises.
+
+        The list-of-chunks path in BaseMessageChunk.__add__ does not pass the
+        'name' kwarg when constructing the result via self.__class__(...),
+        which causes a validation error for FunctionMessageChunk.
+        """
+        from pydantic import ValidationError
+
+        chunk = FunctionMessageChunk(content="a", name="func", id="id-1")
+        others = [
+            FunctionMessageChunk(content="b", name="func"),
+            FunctionMessageChunk(content="c", name="func"),
+        ]
+        with pytest.raises(ValidationError):
+            chunk + others
+
+
+class TestFunctionMessageEquality:
+    """Tests for FunctionMessage equality comparison."""
+
+    def test_equal_messages(self) -> None:
+        """Test that two FunctionMessages with same fields are equal."""
+        msg1 = FunctionMessage(content="Result", name="func", id="eq-1")
+        msg2 = FunctionMessage(content="Result", name="func", id="eq-1")
+        assert msg1 == msg2
+
+    def test_different_content_not_equal(self) -> None:
+        """Test that FunctionMessages with different content are not equal."""
+        msg1 = FunctionMessage(content="Result A", name="func")
+        msg2 = FunctionMessage(content="Result B", name="func")
+        assert msg1 != msg2
+
+    def test_different_name_not_equal(self) -> None:
+        """Test that FunctionMessages with different names are not equal."""
+        msg1 = FunctionMessage(content="Result", name="func1")
+        msg2 = FunctionMessage(content="Result", name="func2")
+        assert msg1 != msg2
+
+
+class TestFunctionMessageSerializableNamespace:
+    """Tests for FunctionMessage is_lc_serializable and get_lc_namespace."""
+
+    def test_is_lc_serializable(self) -> None:
+        """Test that FunctionMessage is LangChain serializable."""
+        assert FunctionMessage.is_lc_serializable() is True
+
+    def test_get_lc_namespace(self) -> None:
+        """Test that FunctionMessage has the expected LangChain namespace."""
+        assert FunctionMessage.get_lc_namespace() == [
+            "langchain",
+            "schema",
+            "messages",
+        ]
+
+    def test_chunk_is_lc_serializable(self) -> None:
+        """Test that FunctionMessageChunk is LangChain serializable."""
+        assert FunctionMessageChunk.is_lc_serializable() is True
+
+    def test_chunk_get_lc_namespace(self) -> None:
+        """Test that FunctionMessageChunk has the expected LangChain namespace."""
+        assert FunctionMessageChunk.get_lc_namespace() == [
+            "langchain",
+            "schema",
+            "messages",
+        ]
+
+
+class TestFunctionMessageChunkContentBlocksEmpty:
+    """Tests for FunctionMessageChunk content_blocks with empty content."""
+
+    def test_content_blocks_empty_string(self) -> None:
+        """Test content_blocks returns empty list for empty string content."""
+        chunk = FunctionMessageChunk(content="", name="func")
+        assert chunk.content_blocks == []
+
+    def test_content_blocks_empty_list(self) -> None:
+        """Test content_blocks returns empty list for empty list content."""
+        chunk = FunctionMessageChunk(content=[], name="func")
+        assert chunk.content_blocks == []
+
+
+class TestFunctionMessageEmptyContent:
+    """Tests for FunctionMessage with empty string content."""
+
+    def test_init_empty_string_content(self) -> None:
+        """Test FunctionMessage initializes with empty string content."""
+        msg = FunctionMessage(content="", name="func")
+        assert msg.content == ""
+        assert msg.name == "func"
+        assert msg.type == "function"
+
+    def test_empty_content_text_property(self) -> None:
+        """Test .text property returns empty string for empty content."""
+        msg = FunctionMessage(content="", name="func")
+        assert msg.text == ""
+
+    def test_empty_content_blocks(self) -> None:
+        """Test content_blocks returns empty list for empty string content."""
+        msg = FunctionMessage(content="", name="func")
+        assert msg.content_blocks == []
+
+
+class TestFunctionMessageChunkFallthrough:
+    """Tests for FunctionMessageChunk falling through to BaseMessageChunk.__add__."""
+
+    def test_add_with_non_function_chunk_raises(self) -> None:
+        """Test adding FunctionMessageChunk with a non-FunctionMessageChunk.
+
+        When the other chunk is not a FunctionMessageChunk, the __add__ method
+        falls through to BaseMessageChunk.__add__. However, BaseMessageChunk
+        constructs the result via self.__class__(...) without passing 'name',
+        which causes a ValidationError since FunctionMessageChunk requires it.
+        """
+        from pydantic import ValidationError
+
+        from langchain_core.messages.human import HumanMessageChunk
+
+        func_chunk = FunctionMessageChunk(content="Hello", name="func", id="func-id")
+        human_chunk = HumanMessageChunk(content=" world")
+        with pytest.raises(ValidationError):
+            func_chunk + human_chunk

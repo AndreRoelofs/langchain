@@ -100,7 +100,10 @@ class TestHumanMessage:
     def test_text_property_list_content(self) -> None:
         """Test .text property with list content."""
         msg = HumanMessage(
-            content=[{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}]
+            content=[
+                {"type": "text", "text": "Part 1"},
+                {"type": "text", "text": "Part 2"},
+            ]
         )
         assert msg.text == "Part 1Part 2"
 
@@ -229,8 +232,12 @@ class TestHumanMessageChunk:
 
     def test_add_with_list_content_with_index(self) -> None:
         """Test adding chunks with list content that have matching index keys."""
-        chunk1 = HumanMessageChunk(content=[{"type": "text", "text": "Hello", "index": 0}])
-        chunk2 = HumanMessageChunk(content=[{"type": "text", "text": " world", "index": 0}])
+        chunk1 = HumanMessageChunk(
+            content=[{"type": "text", "text": "Hello", "index": 0}]
+        )
+        chunk2 = HumanMessageChunk(
+            content=[{"type": "text", "text": " world", "index": 0}]
+        )
         result = chunk1 + chunk2
         assert isinstance(result.content, list)
         # Items with same 'index' key are merged
@@ -326,3 +333,121 @@ class TestHumanMessageChunk:
         assert len(blocks) == 2
         assert blocks[0]["type"] == "text"
         assert blocks[1]["type"] == "image"
+
+
+class TestHumanMessageModelDumpSnapshot:
+    """Tests for HumanMessage model_dump snapshot verification."""
+
+    def test_model_dump_exact_keys_and_values(self) -> None:
+        """Test that model_dump() returns exact expected keys and values."""
+        msg = HumanMessage(content="Hello world", id="msg-001", name="alice")
+        dumped = msg.model_dump()
+        assert dumped["content"] == "Hello world"
+        assert dumped["type"] == "human"
+        assert dumped["name"] == "alice"
+        assert dumped["id"] == "msg-001"
+        assert dumped["additional_kwargs"] == {}
+        assert dumped["response_metadata"] == {}
+
+    def test_model_dump_default_values(self) -> None:
+        """Test that model_dump() has correct defaults for minimal message."""
+        msg = HumanMessage(content="Test")
+        dumped = msg.model_dump()
+        assert dumped["content"] == "Test"
+        assert dumped["type"] == "human"
+        assert dumped["name"] is None
+        assert dumped["id"] is None
+        assert dumped["additional_kwargs"] == {}
+        assert dumped["response_metadata"] == {}
+
+
+class TestHumanMessageChunkContentBlocksEmpty:
+    """Tests for HumanMessageChunk content_blocks with empty content."""
+
+    def test_content_blocks_empty_string(self) -> None:
+        """Test content_blocks with empty string content."""
+        chunk = HumanMessageChunk(content="")
+        blocks = chunk.content_blocks
+        assert blocks == []
+
+    def test_content_blocks_empty_list(self) -> None:
+        """Test content_blocks with empty list content."""
+        chunk = HumanMessageChunk(content=[])
+        blocks = chunk.content_blocks
+        assert blocks == []
+
+
+class TestHumanMessageContentBlocksInit:
+    """Tests for HumanMessage init with content_blocks parameter."""
+
+    def test_init_with_content_blocks_sets_content(self) -> None:
+        """Test that content_blocks parameter sets content equal to blocks."""
+        blocks = [
+            {"type": "text", "text": "Hello"},
+            {"type": "text", "text": " world"},
+        ]
+        msg = HumanMessage(content_blocks=blocks)
+        assert msg.content == blocks
+
+    def test_content_blocks_roundtrip(self) -> None:
+        """Test that content_blocks init produces correct content_blocks property."""
+        blocks = [
+            {"type": "text", "text": "First"},
+            {"type": "text", "text": "Second"},
+        ]
+        msg = HumanMessage(content_blocks=blocks)
+        result_blocks = msg.content_blocks
+        assert len(result_blocks) == 2
+        assert result_blocks[0]["text"] == "First"
+        assert result_blocks[1]["text"] == "Second"
+
+
+class TestHumanMessageEquality:
+    """Tests for HumanMessage equality comparison."""
+
+    def test_same_content_messages_are_equal(self) -> None:
+        """Test that two HumanMessages with same content are equal."""
+        msg1 = HumanMessage(content="Hello")
+        msg2 = HumanMessage(content="Hello")
+        assert msg1 == msg2
+
+    def test_different_content_messages_are_not_equal(self) -> None:
+        """Test that two HumanMessages with different content are not equal."""
+        msg1 = HumanMessage(content="Hello")
+        msg2 = HumanMessage(content="World")
+        assert msg1 != msg2
+
+    def test_same_content_different_id_are_not_equal(self) -> None:
+        """Test that messages with same content but different IDs are not equal."""
+        msg1 = HumanMessage(content="Hello", id="1")
+        msg2 = HumanMessage(content="Hello", id="2")
+        assert msg1 != msg2
+
+    def test_same_content_and_metadata_are_equal(self) -> None:
+        """Test that messages with same content and metadata are equal."""
+        msg1 = HumanMessage(content="Hello", name="user1", id="msg-1")
+        msg2 = HumanMessage(content="Hello", name="user1", id="msg-1")
+        assert msg1 == msg2
+
+
+class TestHumanMessageSerializableNamespace:
+    """Tests for HumanMessage is_lc_serializable and get_lc_namespace."""
+
+    def test_is_lc_serializable(self) -> None:
+        """Test that HumanMessage is LangChain serializable."""
+        assert HumanMessage.is_lc_serializable() is True
+
+    def test_get_lc_namespace(self) -> None:
+        """Test that HumanMessage returns correct LangChain namespace."""
+        namespace = HumanMessage.get_lc_namespace()
+        assert namespace == ["langchain", "schema", "messages"]
+
+    def test_instance_is_lc_serializable(self) -> None:
+        """Test is_lc_serializable on an instance."""
+        msg = HumanMessage(content="Hello")
+        assert msg.is_lc_serializable() is True
+
+    def test_instance_get_lc_namespace(self) -> None:
+        """Test get_lc_namespace on an instance."""
+        msg = HumanMessage(content="Hello")
+        assert msg.get_lc_namespace() == ["langchain", "schema", "messages"]

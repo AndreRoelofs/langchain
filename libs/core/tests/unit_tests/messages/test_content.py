@@ -3,37 +3,37 @@
 import pytest
 
 from langchain_core.messages.content import (
+    # Utilities
+    KNOWN_BLOCK_TYPES,
+    AudioContentBlock,
     # TypedDict types
     Citation,
-    NonStandardAnnotation,
-    TextContentBlock,
-    ToolCall,
-    ToolCallChunk,
+    FileContentBlock,
+    ImageContentBlock,
     InvalidToolCall,
+    NonStandardAnnotation,
+    NonStandardContentBlock,
+    PlainTextContentBlock,
+    ReasoningContentBlock,
     ServerToolCall,
     ServerToolCallChunk,
     ServerToolResult,
-    ReasoningContentBlock,
-    ImageContentBlock,
+    TextContentBlock,
+    ToolCall,
+    ToolCallChunk,
     VideoContentBlock,
-    AudioContentBlock,
-    PlainTextContentBlock,
-    FileContentBlock,
-    NonStandardContentBlock,
-    # Utilities
-    KNOWN_BLOCK_TYPES,
-    is_data_content_block,
+    create_audio_block,
+    create_citation,
+    create_file_block,
+    create_image_block,
+    create_non_standard_block,
+    create_plaintext_block,
+    create_reasoning_block,
     # Factory functions
     create_text_block,
-    create_image_block,
-    create_video_block,
-    create_audio_block,
-    create_file_block,
-    create_plaintext_block,
     create_tool_call,
-    create_reasoning_block,
-    create_citation,
-    create_non_standard_block,
+    create_video_block,
+    is_data_content_block,
 )
 
 
@@ -133,7 +133,11 @@ class TestIsDataContentBlock:
 
     def test_v0_style_image_block_with_source_type_url(self) -> None:
         """Test v0 style image block with source_type='url'."""
-        block = {"type": "image", "source_type": "url", "url": "https://example.com/img.png"}
+        block = {
+            "type": "image",
+            "source_type": "url",
+            "url": "https://example.com/img.png",
+        }
         assert is_data_content_block(block) is True
 
     def test_v0_style_image_block_with_source_type_base64(self) -> None:
@@ -175,9 +179,7 @@ class TestCreateTextBlock:
 
     def test_text_block_with_annotations(self) -> None:
         """Test creating a text block with annotations."""
-        annotations: list = [
-            {"type": "citation", "url": "https://example.com"}
-        ]
+        annotations: list = [{"type": "citation", "url": "https://example.com"}]
         block = create_text_block("Hello", annotations=annotations)
         assert block["annotations"] == annotations
 
@@ -682,3 +684,402 @@ class TestTypedDictStructures:
             "value": {"provider": "custom", "data": "value"},
         }
         assert block["type"] == "non_standard"
+
+
+# ---------------------------------------------------------------------------
+# Additional tests for untested functionality
+# ---------------------------------------------------------------------------
+
+from langchain_core.messages.content import (  # noqa: E402
+    ContentBlock,
+    DataContentBlock,
+    _get_data_content_block_types,
+)
+
+
+class TestKnownBlockTypesSnapshot:
+    """Snapshot-style tests for the exact contents of KNOWN_BLOCK_TYPES."""
+
+    def test_known_block_types_exact_set(self) -> None:
+        """KNOWN_BLOCK_TYPES must equal this exact frozen set of strings."""
+        expected = {
+            "text",
+            "reasoning",
+            "tool_call",
+            "invalid_tool_call",
+            "tool_call_chunk",
+            "image",
+            "audio",
+            "file",
+            "text-plain",
+            "video",
+            "server_tool_call",
+            "server_tool_call_chunk",
+            "server_tool_result",
+            "non_standard",
+        }
+        assert KNOWN_BLOCK_TYPES == expected
+
+    def test_known_block_types_count(self) -> None:
+        """KNOWN_BLOCK_TYPES must contain exactly 14 entries."""
+        assert len(KNOWN_BLOCK_TYPES) == 14
+
+    def test_citation_not_in_known_block_types(self) -> None:
+        """'citation' must NOT be in KNOWN_BLOCK_TYPES."""
+        assert "citation" not in KNOWN_BLOCK_TYPES
+
+    def test_non_standard_annotation_not_in_known_block_types(self) -> None:
+        """'non_standard_annotation' must NOT be in KNOWN_BLOCK_TYPES."""
+        assert "non_standard_annotation" not in KNOWN_BLOCK_TYPES
+
+
+class TestGetDataContentBlockTypes:
+    """Tests for the private _get_data_content_block_types helper."""
+
+    def test_returns_tuple(self) -> None:
+        """_get_data_content_block_types must return a tuple."""
+        result = _get_data_content_block_types()
+        assert isinstance(result, tuple)
+
+    def test_exact_type_literals(self) -> None:
+        """The returned tuple must contain exactly the expected type literals."""
+        result = _get_data_content_block_types()
+        expected = ("image", "video", "audio", "text-plain", "file")
+        assert set(result) == set(expected)
+        assert len(result) == len(expected)
+
+    def test_each_member_is_string(self) -> None:
+        """Every element must be a plain string."""
+        for item in _get_data_content_block_types():
+            assert isinstance(item, str)
+
+
+class TestIsDataContentBlockAdditional:
+    """Additional edge-case tests for is_data_content_block."""
+
+    def test_plaintext_block_with_source_type_text_and_url(self) -> None:
+        """A block with type 'text-plain' using source_type='text' and url."""
+        block = {
+            "type": "text-plain",
+            "source_type": "text",
+            "url": "https://example.com/file.txt",
+        }
+        assert is_data_content_block(block) is True
+
+    def test_image_block_with_type_only_no_data_fields(self) -> None:
+        """An image block with type but NO data fields should return False."""
+        block = {"type": "image"}
+        assert is_data_content_block(block) is False
+
+    def test_video_block_with_file_id(self) -> None:
+        """A video block identified by file_id is a data content block."""
+        block = {"type": "video", "file_id": "vid-file-001"}
+        assert is_data_content_block(block) is True
+
+    def test_audio_block_with_file_id(self) -> None:
+        """An audio block identified by file_id is a data content block."""
+        block = {"type": "audio", "file_id": "aud-file-002"}
+        assert is_data_content_block(block) is True
+
+
+class TestCreateImageBlockBase64WithoutMimeType:
+    """Confirm create_image_block behaviour with base64 but no mime_type."""
+
+    def test_base64_without_mime_type_does_not_raise(self) -> None:
+        """Unlike video/audio, create_image_block does NOT require mime_type for
+        base64 data.  This test documents that intentional asymmetry."""
+        block = create_image_block(base64="iVBORw0KGgo=")
+        assert block["type"] == "image"
+        assert block["base64"] == "iVBORw0KGgo="
+        assert "mime_type" not in block
+
+
+class TestCreateTextBlockNoExtras:
+    """Tests for create_text_block when no extras are provided."""
+
+    def test_text_block_with_none_extras(self) -> None:
+        """When no **kwargs are passed, the 'extras' key must be absent."""
+        block = create_text_block("hello")
+        assert "extras" not in block
+
+
+class TestCreatePlaintextBlockAllFields:
+    """Tests for create_plaintext_block with all fields populated."""
+
+    def test_all_fields_populated(self) -> None:
+        """Every optional field is set; verify all are present in the result."""
+        block = create_plaintext_block(
+            text="some text",
+            url="https://example.com/file.txt",
+            base64="c29tZSB0ZXh0",
+            file_id="file-xyz",
+            title="My Document",
+            context="Summary context",
+            id="pt-999",
+            index=3,
+        )
+        assert block["type"] == "text-plain"
+        assert block["mime_type"] == "text/plain"
+        assert block["text"] == "some text"
+        assert block["url"] == "https://example.com/file.txt"
+        assert block["base64"] == "c29tZSB0ZXh0"
+        assert block["file_id"] == "file-xyz"
+        assert block["title"] == "My Document"
+        assert block["context"] == "Summary context"
+        assert block["id"] == "pt-999"
+        assert block["index"] == 3
+
+    def test_plaintext_block_with_extras(self) -> None:
+        """Extra kwargs end up in the 'extras' dict."""
+        block = create_plaintext_block(
+            text="hello",
+            custom_key="custom_value",
+            another="val",
+        )
+        assert block["extras"] == {
+            "custom_key": "custom_value",
+            "another": "val",
+        }
+
+
+class TestCreateFileBlockAllFields:
+    """Tests for create_file_block with all supported fields."""
+
+    def test_all_fields_populated(self) -> None:
+        """URL, mime_type, index, and custom id must all be present."""
+        block = create_file_block(
+            url="https://example.com/report.pdf",
+            mime_type="application/pdf",
+            id="file-all",
+            index=7,
+        )
+        assert block["type"] == "file"
+        assert block["url"] == "https://example.com/report.pdf"
+        assert block["mime_type"] == "application/pdf"
+        assert block["id"] == "file-all"
+        assert block["index"] == 7
+
+
+class TestCreateCitationMinimal:
+    """Tests for create_citation with minimal fields."""
+
+    def test_citation_with_no_optional_fields(self) -> None:
+        """A citation created with only 'type' (auto-set) and auto-generated id."""
+        block = create_citation()
+        assert block["type"] == "citation"
+        assert "id" in block
+        assert block["id"].startswith("lc_")
+        # None-valued optional fields must be absent
+        assert "url" not in block
+        assert "title" not in block
+        assert "start_index" not in block
+        assert "end_index" not in block
+        assert "cited_text" not in block
+        assert "extras" not in block
+
+
+class TestCreateNonStandardBlockEmptyDict:
+    """Tests for create_non_standard_block with an empty dict value."""
+
+    def test_empty_dict_value(self) -> None:
+        """An empty dict is a valid value for NonStandardContentBlock."""
+        block = create_non_standard_block(value={})
+        assert block["type"] == "non_standard"
+        assert block["value"] == {}
+        assert "id" in block
+        assert block["id"].startswith("lc_")
+
+
+class TestCreateToolCallAutoId:
+    """Tests for create_tool_call automatic id generation."""
+
+    def test_auto_generates_id_when_not_provided(self) -> None:
+        """When id is omitted, create_tool_call must auto-generate one."""
+        block = create_tool_call(name="my_tool", args={"x": 1})
+        assert block["id"] is not None
+        assert isinstance(block["id"], str)
+        assert block["id"].startswith("lc_")
+
+    def test_auto_generated_ids_are_unique(self) -> None:
+        """Successive calls must produce distinct ids."""
+        block_a = create_tool_call(name="t", args={})
+        block_b = create_tool_call(name="t", args={})
+        assert block_a["id"] != block_b["id"]
+
+
+class TestCreateReasoningBlockNoneReasoning:
+    """Tests for create_reasoning_block when reasoning is explicitly None."""
+
+    def test_none_reasoning_defaults_to_empty_string(self) -> None:
+        """Passing reasoning=None must result in an empty string."""
+        block = create_reasoning_block(reasoning=None)
+        assert block["reasoning"] == ""
+        assert block["type"] == "reasoning"
+        assert "id" in block
+
+
+class TestContentBlockUnionType:
+    """Verify that representative blocks of each type satisfy ContentBlock."""
+
+    def _assert_content_block(self, block: ContentBlock) -> None:
+        """Helper: simply ensures the block can be assigned to ContentBlock."""
+        assert "type" in block
+
+    def test_text_content_block(self) -> None:
+        block: ContentBlock = {"type": "text", "text": "hi"}
+        self._assert_content_block(block)
+
+    def test_tool_call_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "tool_call",
+            "id": "tc1",
+            "name": "fn",
+            "args": {},
+        }
+        self._assert_content_block(block)
+
+    def test_invalid_tool_call_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "invalid_tool_call",
+            "id": "itc1",
+            "name": "fn",
+            "args": "bad",
+            "error": "parse error",
+        }
+        self._assert_content_block(block)
+
+    def test_tool_call_chunk_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "tool_call_chunk",
+            "id": "tcc1",
+            "name": "fn",
+            "args": '{"a":1}',
+        }
+        self._assert_content_block(block)
+
+    def test_reasoning_content_block(self) -> None:
+        block: ContentBlock = {"type": "reasoning", "reasoning": "thinking"}
+        self._assert_content_block(block)
+
+    def test_image_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "image",
+            "url": "https://example.com/img.png",
+        }
+        self._assert_content_block(block)
+
+    def test_video_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "video",
+            "url": "https://example.com/vid.mp4",
+        }
+        self._assert_content_block(block)
+
+    def test_audio_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "audio",
+            "url": "https://example.com/aud.mp3",
+        }
+        self._assert_content_block(block)
+
+    def test_plaintext_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "text-plain",
+            "mime_type": "text/plain",
+            "text": "hello",
+        }
+        self._assert_content_block(block)
+
+    def test_file_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "file",
+            "url": "https://example.com/doc.pdf",
+        }
+        self._assert_content_block(block)
+
+    def test_server_tool_call_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "server_tool_call",
+            "id": "stc1",
+            "name": "search",
+            "args": {},
+        }
+        self._assert_content_block(block)
+
+    def test_server_tool_call_chunk_content_block(self) -> None:
+        block: ContentBlock = {"type": "server_tool_call_chunk"}
+        self._assert_content_block(block)
+
+    def test_server_tool_result_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "server_tool_result",
+            "tool_call_id": "stc1",
+            "status": "success",
+        }
+        self._assert_content_block(block)
+
+    def test_non_standard_content_block(self) -> None:
+        block: ContentBlock = {
+            "type": "non_standard",
+            "value": {"data": "custom"},
+        }
+        self._assert_content_block(block)
+
+
+class TestDataContentBlockUnionType:
+    """Verify DataContentBlock includes exactly image, video, audio, text-plain, file."""
+
+    def _assert_data_block(self, block: DataContentBlock) -> None:
+        """Helper: block can be assigned to DataContentBlock."""
+        assert "type" in block
+
+    def test_image_in_data_content_block(self) -> None:
+        block: DataContentBlock = {
+            "type": "image",
+            "url": "https://example.com/img.png",
+        }
+        self._assert_data_block(block)
+
+    def test_video_in_data_content_block(self) -> None:
+        block: DataContentBlock = {
+            "type": "video",
+            "url": "https://example.com/vid.mp4",
+        }
+        self._assert_data_block(block)
+
+    def test_audio_in_data_content_block(self) -> None:
+        block: DataContentBlock = {
+            "type": "audio",
+            "url": "https://example.com/aud.mp3",
+        }
+        self._assert_data_block(block)
+
+    def test_plaintext_in_data_content_block(self) -> None:
+        block: DataContentBlock = {
+            "type": "text-plain",
+            "mime_type": "text/plain",
+            "text": "hi",
+        }
+        self._assert_data_block(block)
+
+    def test_file_in_data_content_block(self) -> None:
+        block: DataContentBlock = {
+            "type": "file",
+            "url": "https://example.com/doc.pdf",
+        }
+        self._assert_data_block(block)
+
+    def test_data_content_block_union_has_exactly_five_members(self) -> None:
+        """DataContentBlock union must consist of exactly 5 member types."""
+        from typing import get_args as _get_args
+
+        members = _get_args(DataContentBlock)
+        assert len(members) == 5
+        member_names = {m.__name__ for m in members}
+        assert member_names == {
+            "ImageContentBlock",
+            "VideoContentBlock",
+            "AudioContentBlock",
+            "PlainTextContentBlock",
+            "FileContentBlock",
+        }

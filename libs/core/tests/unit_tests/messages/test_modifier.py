@@ -61,7 +61,9 @@ class TestRemoveMessage:
 
     def test_with_response_metadata(self) -> None:
         """Test RemoveMessage with response_metadata."""
-        msg = RemoveMessage(id="msg-123", response_metadata={"deleted_at": "2024-01-01"})
+        msg = RemoveMessage(
+            id="msg-123", response_metadata={"deleted_at": "2024-01-01"}
+        )
         assert msg.response_metadata["deleted_at"] == "2024-01-01"
 
     def test_text_property_is_empty(self) -> None:
@@ -102,7 +104,7 @@ class TestRemoveMessageUseCases:
 
     def test_remove_message_in_list(self) -> None:
         """Test using RemoveMessage in a list with other messages."""
-        from langchain_core.messages import HumanMessage, AIMessage
+        from langchain_core.messages import AIMessage, HumanMessage
 
         messages = [
             HumanMessage(content="Hello", id="human-1"),
@@ -144,3 +146,94 @@ class TestRemoveMessageUseCases:
 
         # Even if we try to access content_blocks, it should be empty
         assert msg.content_blocks == []
+
+
+class TestRemoveMessageModelDump:
+    """Tests for RemoveMessage model_dump snapshot."""
+
+    def test_model_dump_snapshot(self) -> None:
+        """Test RemoveMessage model_dump returns exact expected keys."""
+        msg = RemoveMessage(id="msg-dump-1")
+        dumped = msg.model_dump()
+        assert set(dumped.keys()) == {
+            "content",
+            "id",
+            "type",
+            "name",
+            "additional_kwargs",
+            "response_metadata",
+        }
+        assert dumped["content"] == ""
+        assert dumped["id"] == "msg-dump-1"
+        assert dumped["type"] == "remove"
+
+    def test_model_dump_with_name(self) -> None:
+        """Test RemoveMessage model_dump includes name when set."""
+        msg = RemoveMessage(id="msg-dump-2", name="marker")
+        dumped = msg.model_dump()
+        assert dumped["name"] == "marker"
+
+
+class TestRemoveMessageSerializableNamespace:
+    """Tests for RemoveMessage is_lc_serializable and get_lc_namespace."""
+
+    def test_is_lc_serializable(self) -> None:
+        """Test that RemoveMessage is LangChain serializable."""
+        assert RemoveMessage.is_lc_serializable() is True
+
+    def test_get_lc_namespace(self) -> None:
+        """Test that RemoveMessage has the expected LangChain namespace."""
+        assert RemoveMessage.get_lc_namespace() == [
+            "langchain",
+            "schema",
+            "messages",
+        ]
+
+
+class TestRemoveMessageEquality:
+    """Tests for RemoveMessage equality comparison."""
+
+    def test_same_id_equal(self) -> None:
+        """Test that two RemoveMessages with the same id are equal."""
+        msg1 = RemoveMessage(id="same-id")
+        msg2 = RemoveMessage(id="same-id")
+        assert msg1 == msg2
+
+    def test_different_id_not_equal(self) -> None:
+        """Test that two RemoveMessages with different ids are not equal."""
+        msg1 = RemoveMessage(id="id-a")
+        msg2 = RemoveMessage(id="id-b")
+        assert msg1 != msg2
+
+
+class TestRemoveMessageNumericIdCoercion:
+    """Tests for RemoveMessage with numeric id coercion."""
+
+    def test_numeric_id_coerced_to_string(self) -> None:
+        """Test that a numeric id is coerced to a string.
+
+        BaseMessage declares ``id`` with ``coerce_numbers_to_str=True``,
+        so passing a numeric value should result in a string id.
+        """
+        msg = RemoveMessage(id=12345)  # type: ignore[arg-type]
+        assert msg.id == "12345"
+        assert isinstance(msg.id, str)
+
+    def test_float_id_coerced_to_string(self) -> None:
+        """Test that a float id is coerced to a string."""
+        msg = RemoveMessage(id=3.14)  # type: ignore[arg-type]
+        assert isinstance(msg.id, str)
+        assert msg.id == "3.14"
+
+
+class TestRemoveMessagePrettyReprHtml:
+    """Tests for RemoveMessage pretty_repr with html=True."""
+
+    def test_pretty_repr_html(self) -> None:
+        """Test pretty_repr with html=True returns HTML-formatted string."""
+        msg = RemoveMessage(id="html-test")
+        result = msg.pretty_repr(html=True)
+        # Should contain the message role header
+        assert "Remove Message" in result
+        # HTML mode wraps the header differently than plain text
+        assert isinstance(result, str)
