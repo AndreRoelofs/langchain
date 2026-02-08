@@ -63,12 +63,12 @@ def test_blob_loader_with_metadata() -> None:
             yield Blob(
                 data=b"binary data",
                 mimetype="application/octet-stream",
-                metadata={"source": "file.bin", "size": 11, "created": "2024-01-01"}
+                metadata={"source": "file.bin", "size": 11, "created": "2024-01-01"},
             )
             yield Blob(
                 data="text data",
                 mimetype="text/plain",
-                metadata={"source": "file.txt", "size": 9, "created": "2024-01-02"}
+                metadata={"source": "file.txt", "size": 9, "created": "2024-01-02"},
             )
 
     loader = MetadataBlobLoader()
@@ -184,7 +184,7 @@ def test_blob_loader_with_bytes_and_strings() -> None:
             yield Blob(
                 data="unicode: café ☕",
                 source="unicode.txt",
-                mimetype="text/plain; charset=utf-8"
+                mimetype="text/plain; charset=utf-8",
             )
 
     loader = MixedDataBlobLoader()
@@ -288,7 +288,7 @@ def test_blob_loader_with_large_data() -> None:
                 yield Blob(
                     data=f"Document {i}: {'x' * 100}",
                     source=f"doc_{i}.txt",
-                    metadata={"index": i}
+                    metadata={"index": i},
                 )
 
     loader = LargeBlobLoader(100)
@@ -298,3 +298,141 @@ def test_blob_loader_with_large_data() -> None:
     assert all(isinstance(b, Blob) for b in blobs)
     assert blobs[0].metadata["index"] == 0
     assert blobs[99].metadata["index"] == 99
+
+
+def test_blob_loader_yield_blobs_is_abstract() -> None:
+    """Verify that yield_blobs is the abstract method that must be implemented."""
+
+    class MissingYieldBlobs(BlobLoader):
+        pass
+
+    with pytest.raises(TypeError, match="Can't instantiate abstract class"):
+        MissingYieldBlobs()  # type: ignore[abstract]
+
+
+def test_blob_loader_yield_blobs_can_return_list() -> None:
+    """yield_blobs return type is Iterable[Blob], so returning a list is valid."""
+
+    class ListBlobLoader(BlobLoader):
+        @override
+        def yield_blobs(self) -> Iterable[Blob]:
+            return [
+                Blob(data="one"),
+                Blob(data="two"),
+                Blob(data="three"),
+            ]
+
+    loader = ListBlobLoader()
+    blobs = list(loader.yield_blobs())
+
+    assert len(blobs) == 3
+    assert blobs[0].as_string() == "one"
+    assert blobs[1].as_string() == "two"
+    assert blobs[2].as_string() == "three"
+
+
+def test_blob_loaders_module_all() -> None:
+    """Verify that __all__ in blob_loaders contains the expected exports."""
+    from langchain_core.document_loaders import blob_loaders
+
+    assert set(blob_loaders.__all__) == {"Blob", "BlobLoader", "PathLike"}
+
+
+def test_pathlike_is_reexported_from_documents_base() -> None:
+    """PathLike in blob_loaders is re-exported from langchain_core.documents.base."""
+    from langchain_core.documents.base import PathLike as PathLikeFromBase
+
+    assert PathLike is PathLikeFromBase
+
+
+def test_blob_reexported_from_documents_base() -> None:
+    """Blob in blob_loaders is the same object as in langchain_core.documents.base."""
+    assert Blob is BlobImport
+
+
+def test_blob_loader_with_single_blob() -> None:
+    """Test BlobLoader yielding exactly one blob."""
+
+    class SingleBlobLoader(BlobLoader):
+        @override
+        def yield_blobs(self) -> Iterable[Blob]:
+            yield Blob(data="only one", metadata={"source": "single.txt"})
+
+    loader = SingleBlobLoader()
+    blobs = list(loader.yield_blobs())
+
+    assert len(blobs) == 1
+    assert blobs[0].as_string() == "only one"
+    assert blobs[0].source == "single.txt"
+
+
+def test_blob_loader_with_mimetype_variations() -> None:
+    """Test BlobLoader with various mimetype values."""
+
+    class MimetypeBlobLoader(BlobLoader):
+        @override
+        def yield_blobs(self) -> Iterable[Blob]:
+            yield Blob(data="plain", mimetype="text/plain")
+            yield Blob(data=b"\x89PNG", mimetype="image/png")
+            yield Blob(data='{"key": "val"}', mimetype="application/json")
+            yield Blob(data="no mimetype")
+
+    loader = MimetypeBlobLoader()
+    blobs = list(loader.yield_blobs())
+
+    assert len(blobs) == 4
+    assert blobs[0].mimetype == "text/plain"
+    assert blobs[1].mimetype == "image/png"
+    assert blobs[2].mimetype == "application/json"
+    # Default mimetype when not specified
+    assert blobs[3].mimetype is None or isinstance(blobs[3].mimetype, str)
+
+
+def test_blob_loader_subclass_with_init_state() -> None:
+    """Test BlobLoader subclass that maintains state through __init__."""
+
+    class StatefulBlobLoader(BlobLoader):
+        def __init__(self, prefix: str, items: list[str]) -> None:
+            self.prefix = prefix
+            self.items = items
+
+        @override
+        def yield_blobs(self) -> Iterable[Blob]:
+            for item in self.items:
+                yield Blob(
+                    data=f"{self.prefix}: {item}",
+                    metadata={"source": f"{self.prefix}/{item}"},
+                )
+
+    loader = StatefulBlobLoader("test", ["a", "b"])
+    blobs = list(loader.yield_blobs())
+
+    assert len(blobs) == 2
+    assert blobs[0].as_string() == "test: a"
+    assert blobs[0].source == "test/a"
+    assert blobs[1].as_string() == "test: b"
+    assert blobs[1].source == "test/b"
+
+
+def test_blob_loader_exception_midway_preserves_prior_results() -> None:
+    """When an exception occurs mid-iteration, already-yielded blobs
+    are still accessible."""
+
+    class PartialFailBlobLoader(BlobLoader):
+        @override
+        def yield_blobs(self) -> Iterable[Blob]:
+            yield Blob(data="ok1")
+            yield Blob(data="ok2")
+            raise RuntimeError("disk error")
+
+    loader = PartialFailBlobLoader()
+    iterator = loader.yield_blobs()
+
+    blob1 = next(iterator)
+    assert blob1.as_string() == "ok1"
+
+    blob2 = next(iterator)
+    assert blob2.as_string() == "ok2"
+
+    with pytest.raises(RuntimeError, match="disk error"):
+        next(iterator)

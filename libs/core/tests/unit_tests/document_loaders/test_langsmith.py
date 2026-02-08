@@ -1,8 +1,12 @@
 import datetime
+import json
 import uuid
+from collections.abc import Iterator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langsmith import Client as LangSmithClient
 from langsmith.schemas import Example
 
 from langchain_core.document_loaders import LangSmithLoader
@@ -172,7 +176,10 @@ def test_lazy_load_with_dict_content() -> None:
         created_at=datetime.datetime.now(datetime.timezone.utc),
     )
 
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter([example_with_dict]))):
+    with patch(
+        "langsmith.Client.list_examples",
+        MagicMock(return_value=iter([example_with_dict])),
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="data",
@@ -204,7 +211,9 @@ def test_metadata_stringification() -> None:
         source_run_id=source_run_uuid,
     )
 
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter([example]))):
+    with patch(
+        "langsmith.Client.list_examples", MagicMock(return_value=iter([example]))
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="content",
@@ -237,7 +246,9 @@ def test_metadata_with_none_values() -> None:
         source_run_id=None,
     )
 
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter([example]))):
+    with patch(
+        "langsmith.Client.list_examples", MagicMock(return_value=iter([example]))
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="content",
@@ -263,7 +274,9 @@ def test_content_key_with_empty_string() -> None:
         created_at=datetime.datetime.now(datetime.timezone.utc),
     )
 
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter([example]))):
+    with patch(
+        "langsmith.Client.list_examples", MagicMock(return_value=iter([example]))
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="",
@@ -282,7 +295,9 @@ def test_custom_format_content_function() -> None:
     def custom_formatter(content: str) -> str:
         return f"[CUSTOM] {content.upper()} [/CUSTOM]"
 
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))):
+    with patch(
+        "langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="first.second",
@@ -341,7 +356,9 @@ def test_lazy_load_passes_all_parameters(mock_list_examples: MagicMock) -> None:
 
 async def test_aload() -> None:
     """Test async loading via inherited aload method."""
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))):
+    with patch(
+        "langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="first.second",
@@ -357,7 +374,9 @@ async def test_aload() -> None:
 
 async def test_alazy_load() -> None:
     """Test async lazy loading via inherited alazy_load method."""
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))):
+    with patch(
+        "langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="first.second",
@@ -375,7 +394,9 @@ async def test_alazy_load() -> None:
 
 def test_load_method() -> None:
     """Test synchronous load method (convenience method)."""
-    with patch("langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))):
+    with patch(
+        "langsmith.Client.list_examples", MagicMock(return_value=iter(EXAMPLES))
+    ):
         loader = LangSmithLoader(
             dataset_id="test",
             content_key="first.second",
@@ -386,3 +407,299 @@ def test_load_method() -> None:
         assert len(docs) == 3
         assert isinstance(docs, list)
         assert all(isinstance(doc, Document) for doc in docs)
+
+
+def test_stringify_with_string_input() -> None:
+    """Test _stringify returns strings as-is."""
+    from langchain_core.document_loaders.langsmith import _stringify
+
+    assert _stringify("hello") == "hello"
+    assert _stringify("") == ""
+    assert _stringify("multi\nline") == "multi\nline"
+
+
+def test_stringify_with_dict_input() -> None:
+    """Test _stringify JSON-encodes dicts with indent=2."""
+    from langchain_core.document_loaders.langsmith import _stringify
+
+    result = _stringify({"key": "value"})
+    assert '"key": "value"' in result
+    # Should be indented JSON
+    parsed = json.loads(result)
+    assert parsed == {"key": "value"}
+
+
+def test_stringify_with_nested_dict() -> None:
+    """Test _stringify with nested dict structure."""
+    from langchain_core.document_loaders.langsmith import _stringify
+
+    data = {"outer": {"inner": [1, 2, 3]}}
+    result = _stringify(data)
+    parsed = json.loads(result)
+    assert parsed == data
+
+
+def test_stringify_with_non_serializable_dict() -> None:
+    """Test _stringify falls back to str() for non-JSON-serializable dicts."""
+    from langchain_core.document_loaders.langsmith import _stringify
+
+    class NotSerializable:
+        def __repr__(self) -> str:
+            return "NotSerializable()"
+
+    data = {"key": NotSerializable()}
+    result = _stringify(data)
+    # Should fall back to str()
+    assert isinstance(result, str)
+    assert "key" in result
+
+
+def test_content_key_splitting() -> None:
+    """Test that content_key is properly split on dots."""
+    loader = LangSmithLoader(
+        content_key="a.b.c",
+        api_key="dummy",
+    )
+    assert loader.content_key == ["a", "b", "c"]
+
+
+def test_content_key_single_key_no_dots() -> None:
+    """Test content_key with a single key (no dots)."""
+    loader = LangSmithLoader(
+        content_key="simple",
+        api_key="dummy",
+    )
+    assert loader.content_key == ["simple"]
+
+
+def test_content_key_empty_string_results_in_empty_list() -> None:
+    """Test that empty string content_key results in empty list."""
+    loader = LangSmithLoader(
+        content_key="",
+        api_key="dummy",
+    )
+    assert loader.content_key == []
+
+
+def test_deeply_nested_content_key() -> None:
+    """Test content_key with 3+ levels of nesting."""
+    example = Example(
+        inputs={"a": {"b": {"c": {"d": "deeply_nested_value"}}}},
+        outputs=None,
+        dataset_id=uuid.uuid4(),
+        id=uuid.uuid4(),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+
+    with patch(
+        "langsmith.Client.list_examples",
+        MagicMock(return_value=iter([example])),
+    ):
+        loader = LangSmithLoader(
+            dataset_id="test",
+            content_key="a.b.c.d",
+            api_key="dummy",
+        )
+        docs = list(loader.lazy_load())
+
+        assert len(docs) == 1
+        assert docs[0].page_content == "deeply_nested_value"
+
+
+def test_missing_content_key_raises_key_error() -> None:
+    """Test that a missing key in the content_key path raises KeyError."""
+    example = Example(
+        inputs={"a": {"b": "value"}},
+        outputs=None,
+        dataset_id=uuid.uuid4(),
+        id=uuid.uuid4(),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+
+    with patch(
+        "langsmith.Client.list_examples",
+        MagicMock(return_value=iter([example])),
+    ):
+        loader = LangSmithLoader(
+            dataset_id="test",
+            content_key="a.nonexistent",
+            api_key="dummy",
+        )
+        with pytest.raises(KeyError):
+            list(loader.lazy_load())
+
+
+def test_format_content_default_is_stringify() -> None:
+    """Test that the default format_content is _stringify."""
+    from langchain_core.document_loaders.langsmith import _stringify
+
+    loader = LangSmithLoader(api_key="dummy")
+    assert loader.format_content is _stringify
+
+
+def test_langsmith_loader_inherits_from_base_loader() -> None:
+    """Verify LangSmithLoader is a subclass of BaseLoader."""
+    from langchain_core.document_loaders.base import BaseLoader
+
+    assert issubclass(LangSmithLoader, BaseLoader)
+
+
+def test_init_with_explicit_client() -> None:
+    """Test initialization with an explicit client and no kwargs."""
+    client = MagicMock(spec=LangSmithClient)
+
+    loader = LangSmithLoader(client=client, dataset_id="test")
+
+    assert loader._client is client
+    assert loader.dataset_id == "test"
+
+
+def test_init_default_values() -> None:
+    """Test that all default values are set correctly on init."""
+    loader = LangSmithLoader(api_key="dummy")
+
+    assert loader.dataset_id is None
+    assert loader.dataset_name is None
+    assert loader.example_ids is None
+    assert loader.as_of is None
+    assert loader.splits is None
+    assert loader.inline_s3_urls is True
+    assert loader.offset == 0
+    assert loader.limit is None
+    assert loader.metadata is None
+    assert loader.filter is None
+    assert loader.content_key == []
+
+
+def test_lazy_load_metadata_contains_example_fields() -> None:
+    """Test that metadata from lazy_load contains expected example fields."""
+    dataset_uuid = uuid.uuid4()
+    example_uuid = uuid.uuid4()
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    example = Example(
+        inputs={"text": "hello"},
+        outputs={"result": "world"},
+        dataset_id=dataset_uuid,
+        id=example_uuid,
+        created_at=now,
+    )
+
+    with patch(
+        "langsmith.Client.list_examples",
+        MagicMock(return_value=iter([example])),
+    ):
+        loader = LangSmithLoader(
+            dataset_id="test",
+            content_key="text",
+            api_key="dummy",
+        )
+        docs = list(loader.lazy_load())
+
+        assert len(docs) == 1
+        metadata = docs[0].metadata
+
+        # These fields should be present in the metadata
+        assert "inputs" in metadata
+        assert "outputs" in metadata
+        assert "dataset_id" in metadata
+        assert "id" in metadata
+        assert "created_at" in metadata
+
+        # Stringified fields
+        assert metadata["dataset_id"] == str(dataset_uuid)
+        assert metadata["id"] == str(example_uuid)
+
+
+def test_lazy_load_with_multiple_examples_produces_correct_count() -> None:
+    """Verify that lazy_load yields exactly one Document per Example."""
+    examples = [
+        Example(
+            inputs={"content": f"item-{i}"},
+            outputs=None,
+            dataset_id=uuid.uuid4(),
+            id=uuid.uuid4(),
+            created_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+        for i in range(7)
+    ]
+
+    with patch(
+        "langsmith.Client.list_examples",
+        MagicMock(return_value=iter(examples)),
+    ):
+        loader = LangSmithLoader(
+            dataset_id="test",
+            content_key="content",
+            api_key="dummy",
+        )
+        docs = list(loader.lazy_load())
+
+        assert len(docs) == 7
+        for i, doc in enumerate(docs):
+            assert doc.page_content == f"item-{i}"
+
+
+def test_lazy_load_is_lazy() -> None:
+    """Verify lazy_load is actually lazy — documents produced on demand."""
+    call_count = 0
+
+    def counting_examples(**kwargs: Any) -> Iterator:
+        nonlocal call_count
+        for ex in EXAMPLES:
+            call_count += 1
+            yield ex
+
+    with patch("langsmith.Client.list_examples", side_effect=counting_examples):
+        loader = LangSmithLoader(
+            dataset_id="test",
+            content_key="first.second",
+            api_key="dummy",
+        )
+        gen = loader.lazy_load()
+
+        assert call_count == 0
+        next(gen)
+        assert call_count == 1
+
+
+def test_init_with_client_kwargs_only() -> None:
+    """Test that client_kwargs are forwarded to the LangSmith Client."""
+    with patch("langchain_core.document_loaders.langsmith.LangSmithClient") as mock_cls:
+        LangSmithLoader(api_key="my-key", api_url="https://custom.api.com")
+        mock_cls.assert_called_once_with(
+            api_key="my-key", api_url="https://custom.api.com"
+        )
+
+
+def test_format_content_receives_extracted_content() -> None:
+    """Verify format_content receives the content after key extraction,
+    not the raw inputs."""
+    received_values: list[Any] = []
+
+    def capturing_formatter(x: Any) -> str:
+        received_values.append(x)
+        return str(x)
+
+    example = Example(
+        inputs={"outer": {"inner": "target_value"}},
+        outputs=None,
+        dataset_id=uuid.uuid4(),
+        id=uuid.uuid4(),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+
+    with patch(
+        "langsmith.Client.list_examples",
+        MagicMock(return_value=iter([example])),
+    ):
+        loader = LangSmithLoader(
+            dataset_id="test",
+            content_key="outer.inner",
+            format_content=capturing_formatter,
+            api_key="dummy",
+        )
+        list(loader.lazy_load())
+
+    assert len(received_values) == 1
+    assert received_values[0] == "target_value"
