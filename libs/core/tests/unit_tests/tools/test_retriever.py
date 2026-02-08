@@ -354,9 +354,7 @@ def test_retriever_tool_custom_prompt_without_metadata() -> None:
     """Test custom prompt template with simple formatting."""
     retriever = ContextRetriever()
     # Use a simple template that doesn't require metadata access
-    custom_prompt = PromptTemplate.from_template(
-        "Content: {page_content}"
-    )
+    custom_prompt = PromptTemplate.from_template("Content: {page_content}")
 
     tool = create_retriever_tool(
         retriever=retriever,
@@ -368,3 +366,195 @@ def test_retriever_tool_custom_prompt_without_metadata() -> None:
     result = tool.invoke("test")
 
     assert "Content: Result for test" in result
+
+
+# ---------------------------------------------------------------------------
+# Retriever tool schema and properties
+# ---------------------------------------------------------------------------
+
+
+def test_retriever_tool_has_correct_schema() -> None:
+    """Test that retriever tool has RetrieverInput as args_schema."""
+    retriever = MockRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="schema_check",
+        description="Schema check tool",
+    )
+    assert tool.args_schema is RetrieverInput
+    schema = tool.args_schema.model_json_schema()
+    assert "query" in schema["properties"]
+    assert schema["properties"]["query"]["type"] == "string"
+
+
+def test_retriever_tool_response_format_default_is_content() -> None:
+    """Test that default response_format is 'content'."""
+    retriever = MockRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="default_format",
+        description="Default format tool",
+    )
+    assert tool.response_format == "content"
+
+
+def test_retriever_tool_name_and_description_set() -> None:
+    """Test retriever tool name and description are correctly set."""
+    retriever = MockRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="my_retriever",
+        description="My retriever description",
+    )
+    assert tool.name == "my_retriever"
+    assert tool.description == "My retriever description"
+
+
+# ---------------------------------------------------------------------------
+# Retriever tool with custom separator edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_retriever_tool_empty_separator() -> None:
+    """Test retriever tool with empty string separator."""
+    retriever = MockRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="no_sep",
+        description="No separator",
+        document_separator="",
+    )
+    result = tool.invoke("test")
+    # Documents should be concatenated with no separator
+    assert "Document 1 for test" in result
+    assert "Document 2 for test" in result
+    # No separator between docs
+    assert "Document 1 for testDocument 2 for test" in result
+
+
+def test_retriever_tool_single_char_separator() -> None:
+    """Test retriever tool with single character separator."""
+    retriever = MockRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="pipe_sep",
+        description="Pipe separator",
+        document_separator="|",
+    )
+    result = tool.invoke("test")
+    assert "|" in result
+
+
+# ---------------------------------------------------------------------------
+# Retriever tool custom prompt with metadata access
+# ---------------------------------------------------------------------------
+
+
+def test_retriever_tool_prompt_with_metadata() -> None:
+    """Test retriever tool with prompt template that accesses metadata."""
+    retriever = ContextRetriever()
+    custom_prompt = PromptTemplate.from_template("[{source}] {page_content}")
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="meta_retriever",
+        description="Metadata retriever",
+        document_prompt=custom_prompt,
+    )
+    result = tool.invoke("test")
+    assert "[test]" in result
+    assert "Result for test" in result
+
+
+# ---------------------------------------------------------------------------
+# Retriever tool async with ToolCall
+# ---------------------------------------------------------------------------
+
+
+async def test_retriever_tool_async_with_tool_call() -> None:
+    """Test retriever tool async invocation with ToolCall."""
+    retriever = MockRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="async_tc_retriever",
+        description="Async ToolCall retriever",
+    )
+
+    tool_call: ToolCall = {
+        "name": "async_tc_retriever",
+        "args": {"query": "async test"},
+        "id": "call_async_tc",
+        "type": "tool_call",
+    }
+    result = await tool.ainvoke(tool_call)
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "call_async_tc"
+    assert "Document 1 for async test" in result.content
+
+
+async def test_retriever_tool_async_artifact_with_tool_call() -> None:
+    """Test retriever tool async with artifact format and ToolCall."""
+    retriever = MockRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="async_art_retriever",
+        description="Async artifact retriever",
+        response_format="content_and_artifact",
+    )
+
+    tool_call: ToolCall = {
+        "name": "async_art_retriever",
+        "args": {"query": "async art"},
+        "id": "call_async_art",
+        "type": "tool_call",
+    }
+    result = await tool.ainvoke(tool_call)
+    assert isinstance(result, ToolMessage)
+    assert result.artifact is not None
+    assert len(result.artifact) == 2
+    assert all(isinstance(doc, Document) for doc in result.artifact)
+
+
+# ---------------------------------------------------------------------------
+# Retriever tool empty results with artifact format
+# ---------------------------------------------------------------------------
+
+
+def test_retriever_tool_empty_results_artifact_format() -> None:
+    """Test retriever tool with no results in content_and_artifact format."""
+    retriever = EmptyRetriever()
+    tool = create_retriever_tool(
+        retriever=retriever,
+        name="empty_art_retriever",
+        description="Empty artifact retriever",
+        response_format="content_and_artifact",
+    )
+
+    tc: ToolCall = {
+        "name": "empty_art_retriever",
+        "args": {"query": "nothing"},
+        "id": "call_empty",
+        "type": "tool_call",
+    }
+    result = tool.invoke(tc)
+    assert isinstance(result, ToolMessage)
+    assert result.content == ""
+    assert result.artifact == []
+
+
+# ---------------------------------------------------------------------------
+# RetrieverInput validation
+# ---------------------------------------------------------------------------
+
+
+def test_retriever_input_empty_query() -> None:
+    """Test RetrieverInput accepts empty string query."""
+    ri = RetrieverInput(query="")
+    assert ri.query == ""
+
+
+def test_retriever_input_rejects_missing_query() -> None:
+    """Test RetrieverInput requires query field."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        RetrieverInput()  # type: ignore[call-arg]

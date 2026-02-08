@@ -6,7 +6,11 @@ import pytest
 from pydantic import BaseModel
 from typing_extensions import override
 
-from langchain_core.tools import BaseTool, render_text_description, render_text_description_and_args
+from langchain_core.tools import (
+    BaseTool,
+    render_text_description,
+    render_text_description_and_args,
+)
 
 
 class MockSchema(BaseModel):
@@ -148,8 +152,7 @@ def test_render_text_description_and_args_shows_all_properties() -> None:
 def test_render_functions_preserve_order() -> None:
     """Test that rendering preserves the order of tools."""
     tools = [
-        MockToolWithoutFunc(name=f"tool_{i}", description=f"Tool {i}")
-        for i in range(5)
+        MockToolWithoutFunc(name=f"tool_{i}", description=f"Tool {i}") for i in range(5)
     ]
 
     result_desc = render_text_description(tools)
@@ -166,3 +169,112 @@ def test_render_functions_preserve_order() -> None:
         assert f"tool_{i}" in line_args
         assert f"Tool {i}" in line_desc
         assert f"Tool {i}" in line_args
+
+
+# ---------------------------------------------------------------------------
+# render_text_description edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_render_text_description_single_tool() -> None:
+    """Test rendering a single tool produces exactly one line."""
+    tool = MockToolWithoutFunc()
+    result = render_text_description([tool])
+    assert "\n" not in result
+    assert result == "mock_tool_without_func - A mock tool without func"
+
+
+def test_render_text_description_special_characters_in_description() -> None:
+    """Test rendering tool with special characters in description."""
+    tool = MockToolWithoutFunc(
+        name="special_tool",
+        description="Tool with 'quotes' & <brackets> and \"double quotes\"",
+    )
+    result = render_text_description([tool])
+    assert "'quotes'" in result
+    assert "<brackets>" in result
+    assert '"double quotes"' in result
+
+
+def test_render_text_description_empty_description() -> None:
+    """Test rendering tool with empty description."""
+    tool = MockToolWithoutFunc(name="empty_desc", description="")
+    result = render_text_description([tool])
+    assert result == "empty_desc - "
+
+
+def test_render_text_description_func_attribute_false() -> None:
+    """Test that tool with func=None uses name-only format."""
+
+    class ToolWithNoneFunc(BaseTool):
+        name: str = "none_func_tool"
+        description: str = "Tool with None func"
+        func: object | None = None
+        args_schema: type[BaseModel] = MockSchema
+
+        @override
+        def _run(self, arg1: int, arg2: str) -> str:
+            return ""
+
+    tool = ToolWithNoneFunc()
+    result = render_text_description([tool])
+    # func is None (falsy), so should not include signature
+    assert result == "none_func_tool - Tool with None func"
+
+
+# ---------------------------------------------------------------------------
+# render_text_description_and_args edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_render_text_description_and_args_single_tool() -> None:
+    """Test rendering a single tool with args."""
+    tool = MockToolWithoutFunc()
+    result = render_text_description_and_args([tool])
+    assert "\n" not in result
+    assert "args:" in result
+    assert "mock_tool_without_func" in result
+
+
+def test_render_text_description_and_args_includes_all_arg_types() -> None:
+    """Test that rendered args include type information for all args."""
+    tool = MockToolWithoutFunc()
+    result = render_text_description_and_args([tool])
+    # MockSchema has arg1: int and arg2: str
+    assert "'arg1'" in result
+    assert "'arg2'" in result
+
+
+def test_render_text_description_mixed_tools() -> None:
+    """Test rendering a mix of tools with and without func."""
+    tool1 = MockToolWithFunc()
+    tool2 = MockToolWithoutFunc()
+
+    result = render_text_description([tool1, tool2])
+    lines = result.split("\n")
+    assert len(lines) == 2
+    # First line should have signature (has func)
+    assert "self" in lines[0] or "(" in lines[0]
+    # Second line should not have signature
+    assert lines[1] == "mock_tool_without_func - A mock tool without func"
+
+
+def test_render_text_description_and_args_mixed_tools() -> None:
+    """Test rendering mixed tools with args."""
+    tool1 = MockToolWithFunc()
+    tool2 = MockToolWithoutFunc()
+
+    result = render_text_description_and_args([tool1, tool2])
+    lines = result.split("\n")
+    assert len(lines) == 2
+    assert all("args:" in line for line in lines)
+
+
+def test_render_text_description_unicode_in_description() -> None:
+    """Test rendering tool with unicode characters in description."""
+    tool = MockToolWithoutFunc(
+        name="unicode_tool",
+        description="Tool description",
+    )
+    result = render_text_description([tool])
+    assert "Tool description" in result

@@ -242,6 +242,7 @@ def test_tool_with_lambda_func() -> None:
 
 def test_tool_with_partial_function() -> None:
     """Test Tool with partial function."""
+
     def full_func(x: str, prefix: str) -> str:
         return f"{prefix}: {x}"
 
@@ -311,7 +312,9 @@ def test_tool_without_func_raises_not_implemented() -> None:
         coroutine=async_func,
     )
 
-    with pytest.raises(NotImplementedError, match="Tool does not support sync invocation"):
+    with pytest.raises(
+        NotImplementedError, match="Tool does not support sync invocation"
+    ):
         tool.invoke("test")
 
 
@@ -412,3 +415,227 @@ def test_tool_invoke_with_string_for_dict_arg() -> None:
     # String input should work for single-input tools
     result = tool.invoke("test_string")
     assert "test_string" in result
+
+
+# ---------------------------------------------------------------------------
+# Error handling on Tool
+# ---------------------------------------------------------------------------
+
+
+def test_tool_error_handled_with_bool() -> None:
+    """Test Tool with handle_tool_error=True returns error message."""
+
+    def failing_func(x: str) -> str:
+        raise ToolException("tool broke")
+
+    tool = Tool(
+        name="failing",
+        func=failing_func,
+        description="Fails",
+        handle_tool_error=True,
+    )
+    result = tool.invoke("test")
+    assert result == "tool broke"
+
+
+def test_tool_error_handled_with_string() -> None:
+    """Test Tool with handle_tool_error as string returns that string."""
+
+    def failing_func(x: str) -> str:
+        raise ToolException("original")
+
+    tool = Tool(
+        name="failing",
+        func=failing_func,
+        description="Fails",
+        handle_tool_error="Custom error",
+    )
+    result = tool.invoke("test")
+    assert result == "Custom error"
+
+
+def test_tool_error_handled_with_callable() -> None:
+    """Test Tool with handle_tool_error as callable."""
+
+    def failing_func(x: str) -> str:
+        raise ToolException("msg")
+
+    tool = Tool(
+        name="failing",
+        func=failing_func,
+        description="Fails",
+        handle_tool_error=lambda e: f"Caught: {e.args[0]}",
+    )
+    result = tool.invoke("test")
+    assert result == "Caught: msg"
+
+
+def test_tool_error_not_handled_propagates() -> None:
+    """Test that ToolException propagates when handle_tool_error is False."""
+
+    def failing_func(x: str) -> str:
+        raise ToolException("boom")
+
+    tool = Tool(
+        name="failing",
+        func=failing_func,
+        description="Fails",
+    )
+    with pytest.raises(ToolException, match="boom"):
+        tool.invoke("test")
+
+
+def test_tool_error_with_tool_call_returns_error_tool_message() -> None:
+    """Test that handled error with ToolCall returns ToolMessage with error status."""
+
+    def failing_func(x: str) -> str:
+        raise ToolException("err")
+
+    tool = Tool(
+        name="failing",
+        func=failing_func,
+        description="Fails",
+        handle_tool_error=True,
+    )
+    tc: ToolCall = {
+        "name": "failing",
+        "args": {"x": "test"},
+        "id": "call_err",
+        "type": "tool_call",
+    }
+    result = tool.invoke(tc)
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert result.content == "err"
+    assert result.tool_call_id == "call_err"
+
+
+# ---------------------------------------------------------------------------
+# Tool with callbacks parameter in function
+# ---------------------------------------------------------------------------
+
+
+def test_tool_with_callbacks_parameter() -> None:
+    """Test Tool function that accepts callbacks parameter."""
+    captured = {}
+
+    def func_with_callbacks(x: str, callbacks: object = None) -> str:
+        captured["callbacks"] = callbacks
+        return x
+
+    tool = Tool(
+        name="cb_tool",
+        func=func_with_callbacks,
+        description="Tool with callbacks",
+    )
+    result = tool.invoke("test")
+    assert result == "test"
+
+
+# ---------------------------------------------------------------------------
+# Tool run with tool_call_id
+# ---------------------------------------------------------------------------
+
+
+def test_tool_run_with_tool_call_id() -> None:
+    """Test Tool.run with explicit tool_call_id returns ToolMessage."""
+    tool = Tool(
+        name="test_tool",
+        func=simple_func,
+        description="Test",
+    )
+    result = tool.run("input", tool_call_id="run_call_1")
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "run_call_1"
+    assert result.content == "Result: input"
+
+
+# ---------------------------------------------------------------------------
+# Tool with response_format = content_and_artifact
+# ---------------------------------------------------------------------------
+
+
+def test_tool_content_and_artifact_format() -> None:
+    """Test Tool with response_format='content_and_artifact'."""
+
+    def artifact_func(x: str) -> tuple[str, dict]:
+        return f"content: {x}", {"raw": x}
+
+    tool = Tool(
+        name="artifact_tool",
+        func=artifact_func,
+        description="Artifact tool",
+        response_format="content_and_artifact",
+    )
+    tc: ToolCall = {
+        "name": "artifact_tool",
+        "args": {"x": "hello"},
+        "id": "call_a",
+        "type": "tool_call",
+    }
+    result = tool.invoke(tc)
+    assert isinstance(result, ToolMessage)
+    assert result.content == "content: hello"
+    assert result.artifact == {"raw": "hello"}
+
+
+def test_tool_content_and_artifact_bad_return_raises() -> None:
+    """Test Tool with content_and_artifact but non-tuple return raises."""
+
+    def bad_func(x: str) -> str:
+        return x
+
+    tool = Tool(
+        name="bad_tool",
+        func=bad_func,
+        description="Bad tool",
+        response_format="content_and_artifact",
+    )
+    with pytest.raises(ValueError, match="two-tuple"):
+        tool.invoke({"x": "test"})
+
+
+# ---------------------------------------------------------------------------
+# Tool verbose flag
+# ---------------------------------------------------------------------------
+
+
+def test_tool_verbose_flag() -> None:
+    """Test Tool verbose flag is settable."""
+    tool = Tool(
+        name="verbose_tool",
+        func=simple_func,
+        description="Verbose tool",
+        verbose=True,
+    )
+    assert tool.verbose is True
+
+
+# ---------------------------------------------------------------------------
+# Async Tool with both func and coroutine
+# ---------------------------------------------------------------------------
+
+
+async def test_tool_ainvoke_prefers_coroutine() -> None:
+    """Test ainvoke uses coroutine when both func and coroutine are provided."""
+    tool = Tool(
+        name="dual_tool",
+        func=simple_func,
+        description="Dual tool",
+        coroutine=async_func,
+    )
+    result = await tool.ainvoke("test")
+    assert result == "Async result: test"
+
+
+async def test_tool_arun_with_tool_call_id() -> None:
+    """Test arun with tool_call_id returns ToolMessage."""
+    tool = Tool(
+        name="async_tool",
+        func=simple_func,
+        description="Async",
+        coroutine=async_func,
+    )
+    result = await tool.arun("input", tool_call_id="async_call_1")
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "async_call_1"
