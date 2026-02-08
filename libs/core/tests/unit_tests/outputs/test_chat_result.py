@@ -1,9 +1,10 @@
 """Unit tests for ChatResult class."""
 
 import pytest
+from pydantic import BaseModel
 
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 
 class TestChatResult:
@@ -114,3 +115,122 @@ class TestChatResult:
         assert len(result.generations) == 3
         for i, gen in enumerate(result.generations, 1):
             assert gen.text == f"Candidate {i}"
+
+
+class TestChatResultSerialization:
+    """Test suite for ChatResult serialization roundtrips."""
+
+    def test_model_dump_basic(self) -> None:
+        """Test model_dump for ChatResult."""
+        gen = ChatGeneration(message=AIMessage(content="Hello"))
+        result = ChatResult(generations=[gen])
+        data = result.model_dump()
+        assert "generations" in data
+        assert len(data["generations"]) == 1
+        assert data["llm_output"] is None
+
+    def test_model_dump_with_llm_output(self) -> None:
+        """Test model_dump includes llm_output."""
+        gen = ChatGeneration(message=AIMessage(content="Hello"))
+        result = ChatResult(
+            generations=[gen],
+            llm_output={"model": "gpt-4", "token_usage": {"total": 50}},
+        )
+        data = result.model_dump()
+        assert data["llm_output"]["model"] == "gpt-4"
+        assert data["llm_output"]["token_usage"]["total"] == 50
+
+    def test_json_roundtrip(self) -> None:
+        """Test JSON serialization roundtrip."""
+        gen = ChatGeneration(
+            message=AIMessage(content="test"),
+            generation_info={"finish_reason": "stop"},
+        )
+        result = ChatResult(
+            generations=[gen],
+            llm_output={"model": "gpt-4"},
+        )
+        json_str = result.model_dump_json()
+        restored = ChatResult.model_validate_json(json_str)
+        assert len(restored.generations) == 1
+        assert restored.generations[0].text == "test"
+        assert restored.llm_output == {"model": "gpt-4"}
+
+    def test_model_validate_from_dict(self) -> None:
+        """Test model_validate from dict."""
+        gen = ChatGeneration(message=AIMessage(content="test"))
+        result = ChatResult(generations=[gen], llm_output={"key": "val"})
+        data = result.model_dump()
+        restored = ChatResult.model_validate(data)
+        assert len(restored.generations) == len(result.generations)
+        assert restored.llm_output == result.llm_output
+
+
+class TestChatResultEquality:
+    """Test suite for ChatResult equality semantics."""
+
+    def test_equality_same_content(self) -> None:
+        """Test equality for ChatResults with same content."""
+        gen = ChatGeneration(message=AIMessage(content="Hello"))
+        result1 = ChatResult(generations=[gen], llm_output={"model": "gpt-4"})
+        result2 = ChatResult(generations=[gen], llm_output={"model": "gpt-4"})
+        assert result1 == result2
+
+    def test_inequality_different_generations(self) -> None:
+        """Test inequality for ChatResults with different generations."""
+        gen1 = ChatGeneration(message=AIMessage(content="Hello"))
+        gen2 = ChatGeneration(message=AIMessage(content="Goodbye"))
+        result1 = ChatResult(generations=[gen1])
+        result2 = ChatResult(generations=[gen2])
+        assert result1 != result2
+
+    def test_inequality_different_llm_output(self) -> None:
+        """Test inequality for ChatResults with different llm_output."""
+        gen = ChatGeneration(message=AIMessage(content="Hello"))
+        result1 = ChatResult(generations=[gen], llm_output={"model": "gpt-4"})
+        result2 = ChatResult(generations=[gen], llm_output={"model": "gpt-3.5"})
+        assert result1 != result2
+
+    def test_equality_both_none_llm_output(self) -> None:
+        """Test equality when both have None llm_output."""
+        gen = ChatGeneration(message=AIMessage(content="Hello"))
+        result1 = ChatResult(generations=[gen])
+        result2 = ChatResult(generations=[gen])
+        assert result1 == result2
+
+
+class TestChatResultModelBehavior:
+    """Test suite for ChatResult Pydantic model behavior."""
+
+    def test_is_pydantic_model(self) -> None:
+        """Test that ChatResult is a Pydantic BaseModel."""
+        gen = ChatGeneration(message=AIMessage(content="test"))
+        result = ChatResult(generations=[gen])
+        assert isinstance(result, BaseModel)
+
+    def test_with_chat_generation_chunk(self) -> None:
+        """Test ChatResult with ChatGenerationChunk objects."""
+        chunk = ChatGenerationChunk(message=AIMessageChunk(content="chunk"))
+        result = ChatResult(generations=[chunk])
+        assert len(result.generations) == 1
+        assert isinstance(result.generations[0], ChatGenerationChunk)
+        assert result.generations[0].text == "chunk"
+
+    def test_generations_ordering_preserved(self) -> None:
+        """Test that generation ordering is preserved."""
+        gens = [
+            ChatGeneration(message=AIMessage(content=f"Response {i}")) for i in range(5)
+        ]
+        result = ChatResult(generations=gens)
+        for i, gen in enumerate(result.generations):
+            assert gen.text == f"Response {i}"
+
+    def test_generations_with_mixed_content_types(self) -> None:
+        """Test ChatResult with generations having different content types."""
+        gen_str = ChatGeneration(message=AIMessage(content="string content"))
+        gen_list = ChatGeneration(
+            message=AIMessage(content=[{"text": "list content", "type": "text"}])
+        )
+        result = ChatResult(generations=[gen_str, gen_list])
+        assert result.generations[0].text == "string content"
+        assert result.generations[1].text == "list content"

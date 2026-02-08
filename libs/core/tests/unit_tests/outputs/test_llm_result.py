@@ -1,8 +1,10 @@
 """Unit tests for LLMResult class."""
 
+from copy import deepcopy
 from uuid import uuid4
 
 import pytest
+from pydantic import BaseModel
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import (
@@ -256,3 +258,199 @@ class TestLLMResult:
         result = LLMResult(generations=[[gen]], llm_output=llm_output)
         assert result.llm_output == llm_output
         assert result.llm_output["metadata"]["temperature"] == 0.7
+
+
+class TestLLMResultFlatten:
+    """Test suite for LLMResult.flatten() edge cases."""
+
+    def test_flatten_does_not_include_run_info(self) -> None:
+        """Test that flatten drops run info from flattened results."""
+        gen1 = Generation(text="R1")
+        gen2 = Generation(text="R2")
+        run_info = [RunInfo(run_id=uuid4()), RunInfo(run_id=uuid4())]
+        result = LLMResult(generations=[[gen1], [gen2]], run=run_info)
+        flattened = result.flatten()
+        for flat in flattened:
+            assert flat.run is None
+
+    def test_flatten_deep_copies_llm_output_for_subsequent(self) -> None:
+        """Test that flatten deep copies llm_output so mutations are isolated."""
+        gen1 = Generation(text="R1")
+        gen2 = Generation(text="R2")
+        llm_output = {"token_usage": {"total": 100}, "model": "gpt-4"}
+        result = LLMResult(generations=[[gen1], [gen2]], llm_output=llm_output)
+        flattened = result.flatten()
+        # Mutate the second flattened result's llm_output
+        flattened[1].llm_output["model"] = "modified"
+        # Original should not be affected
+        assert result.llm_output["model"] == "gpt-4"
+        # First flattened result should not be affected
+        assert flattened[0].llm_output["model"] == "gpt-4"
+
+    def test_flatten_preserves_all_candidates_in_gen_list(self) -> None:
+        """Test flatten keeps all candidates within each generation list."""
+        gen1a = Generation(text="1A")
+        gen1b = Generation(text="1B")
+        gen2a = Generation(text="2A")
+        result = LLMResult(generations=[[gen1a, gen1b], [gen2a]])
+        flattened = result.flatten()
+        assert len(flattened) == 2
+        assert len(flattened[0].generations[0]) == 2
+        assert flattened[0].generations[0][0].text == "1A"
+        assert flattened[0].generations[0][1].text == "1B"
+        assert len(flattened[1].generations[0]) == 1
+        assert flattened[1].generations[0][0].text == "2A"
+
+    def test_flatten_with_chat_generations(self) -> None:
+        """Test flatten works with ChatGeneration objects."""
+        gen1 = ChatGeneration(message=AIMessage(content="Chat 1"))
+        gen2 = ChatGeneration(message=AIMessage(content="Chat 2"))
+        llm_output = {"token_usage": {"total": 50}}
+        result = LLMResult(generations=[[gen1], [gen2]], llm_output=llm_output)
+        flattened = result.flatten()
+        assert len(flattened) == 2
+        assert isinstance(flattened[0].generations[0][0], ChatGeneration)
+        assert flattened[0].generations[0][0].text == "Chat 1"
+        assert flattened[0].llm_output["token_usage"]["total"] == 50
+        assert flattened[1].llm_output["token_usage"] == {}
+
+    def test_flatten_single_generation_preserves_llm_output(self) -> None:
+        """Test flatten with single generation preserves llm_output fully."""
+        gen = Generation(text="Only")
+        llm_output = {"token_usage": {"total": 10}, "model": "test"}
+        result = LLMResult(generations=[[gen]], llm_output=llm_output)
+        flattened = result.flatten()
+        assert len(flattened) == 1
+        assert flattened[0].llm_output == llm_output
+
+    def test_flatten_many_prompts_token_usage_cleared(self) -> None:
+        """Test flatten clears token_usage for all prompts after the first."""
+        gens = [[Generation(text=f"R{i}")] for i in range(5)]
+        llm_output = {"token_usage": {"total": 200}, "model": "gpt-4"}
+        result = LLMResult(generations=gens, llm_output=llm_output)
+        flattened = result.flatten()
+        assert len(flattened) == 5
+        assert flattened[0].llm_output["token_usage"]["total"] == 200
+        for flat in flattened[1:]:
+            assert flat.llm_output["token_usage"] == {}
+            assert flat.llm_output["model"] == "gpt-4"
+
+    def test_flatten_empty_generations(self) -> None:
+        """Test flatten with empty generations list."""
+        result = LLMResult(generations=[])
+        flattened = result.flatten()
+        assert flattened == []
+
+    def test_flatten_with_empty_llm_output_dict(self) -> None:
+        """Test flatten with empty dict llm_output."""
+        gen1 = Generation(text="R1")
+        gen2 = Generation(text="R2")
+        result = LLMResult(generations=[[gen1], [gen2]], llm_output={})
+        flattened = result.flatten()
+        assert flattened[0].llm_output == {}
+        assert flattened[1].llm_output is not None
+        assert flattened[1].llm_output["token_usage"] == {}
+
+
+class TestLLMResultEquality:
+    """Test suite for LLMResult equality edge cases."""
+
+    def test_equality_returns_not_implemented_for_non_llm_result(self) -> None:
+        """Test that __eq__ returns NotImplemented for non-LLMResult."""
+        gen = Generation(text="Response")
+        result = LLMResult(generations=[[gen]])
+        assert result.__eq__("not an LLMResult") is NotImplemented
+        assert result.__eq__(42) is NotImplemented
+        assert result.__eq__(None) is NotImplemented
+
+    def test_not_hashable(self) -> None:
+        """Test that LLMResult raises TypeError when hashed."""
+        gen = Generation(text="Response")
+        result = LLMResult(generations=[[gen]])
+        with pytest.raises(TypeError):
+            hash(result)
+
+    def test_equality_empty_generations(self) -> None:
+        """Test equality with empty generations."""
+        result1 = LLMResult(generations=[])
+        result2 = LLMResult(generations=[])
+        assert result1 == result2
+
+    def test_equality_same_generations_different_run(self) -> None:
+        """Test equality ignores run with different values."""
+        gen = Generation(text="test")
+        result1 = LLMResult(
+            generations=[[gen]],
+            run=[RunInfo(run_id=uuid4())],
+        )
+        result2 = LLMResult(
+            generations=[[gen]],
+            run=None,
+        )
+        assert result1 == result2
+
+    def test_inequality_none_vs_dict_llm_output(self) -> None:
+        """Test inequality between None and dict llm_output."""
+        gen = Generation(text="Response")
+        result1 = LLMResult(generations=[[gen]], llm_output=None)
+        result2 = LLMResult(generations=[[gen]], llm_output={})
+        assert result1 != result2
+
+
+class TestLLMResultSerialization:
+    """Test suite for LLMResult serialization."""
+
+    def test_model_dump_basic(self) -> None:
+        """Test model_dump for LLMResult."""
+        gen = Generation(text="Response")
+        result = LLMResult(generations=[[gen]], llm_output={"model": "test"})
+        data = result.model_dump()
+        assert "generations" in data
+        assert data["llm_output"] == {"model": "test"}
+        assert data["type"] == "LLMResult"
+        assert data["run"] is None
+
+    def test_model_dump_with_run_info(self) -> None:
+        """Test model_dump includes run info."""
+        gen = Generation(text="Response")
+        run_id = uuid4()
+        result = LLMResult(
+            generations=[[gen]],
+            run=[RunInfo(run_id=run_id)],
+        )
+        data = result.model_dump()
+        assert data["run"] is not None
+        assert len(data["run"]) == 1
+        assert data["run"][0]["run_id"] == run_id
+
+    def test_is_pydantic_model(self) -> None:
+        """Test that LLMResult is a Pydantic BaseModel."""
+        gen = Generation(text="test")
+        result = LLMResult(generations=[[gen]])
+        assert isinstance(result, BaseModel)
+
+    def test_json_roundtrip(self) -> None:
+        """Test JSON serialization roundtrip."""
+        gen = Generation(text="test", generation_info={"reason": "stop"})
+        result = LLMResult(
+            generations=[[gen]],
+            llm_output={"model": "gpt-4"},
+        )
+        json_str = result.model_dump_json()
+        restored = LLMResult.model_validate_json(json_str)
+        assert len(restored.generations) == 1
+        assert restored.generations[0][0].text == "test"
+        assert restored.llm_output == {"model": "gpt-4"}
+        assert restored.type == "LLMResult"
+
+    def test_model_validate_from_dict(self) -> None:
+        """Test model_validate from dict."""
+        gen = Generation(text="test")
+        result = LLMResult(
+            generations=[[gen]],
+            llm_output={"key": "val"},
+        )
+        data = result.model_dump()
+        restored = LLMResult.model_validate(data)
+        assert restored.llm_output == result.llm_output
+        assert len(restored.generations) == len(result.generations)

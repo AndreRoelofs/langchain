@@ -153,3 +153,48 @@ class TestRunInfo:
         run_id = UUID(uuid_str)
         run_info = RunInfo(run_id=run_id)
         assert str(run_info.run_id) == uuid_str
+
+
+class TestRunInfoPydanticCoercion:
+    """Test suite for RunInfo Pydantic coercion behavior."""
+
+    def test_creation_from_string_uuid(self) -> None:
+        """Test that Pydantic coerces string UUID to UUID object."""
+        uuid_str = "12345678-1234-5678-1234-567812345678"
+        run_info = RunInfo(run_id=uuid_str)  # type: ignore[arg-type]
+        assert isinstance(run_info.run_id, UUID)
+        assert str(run_info.run_id) == uuid_str
+
+    def test_model_validate(self) -> None:
+        """Test model_validate with dict containing UUID."""
+        run_id = uuid4()
+        run_info = RunInfo.model_validate({"run_id": run_id})
+        assert run_info.run_id == run_id
+
+    def test_model_validate_with_string_uuid(self) -> None:
+        """Test model_validate with dict containing string UUID."""
+        uuid_str = "12345678-1234-5678-1234-567812345678"
+        run_info = RunInfo.model_validate({"run_id": uuid_str})
+        assert isinstance(run_info.run_id, UUID)
+        assert str(run_info.run_id) == uuid_str
+
+    def test_model_fields(self) -> None:
+        """Test that RunInfo has expected model fields."""
+        fields = RunInfo.model_fields
+        assert "run_id" in fields
+
+    def test_copy(self) -> None:
+        """Test RunInfo copy produces equivalent object."""
+        run_id = uuid4()
+        original = RunInfo(run_id=run_id)
+        copied = original.model_copy()
+        assert copied.run_id == original.run_id
+        assert copied == original
+
+    def test_copy_deep(self) -> None:
+        """Test RunInfo deep copy produces independent object."""
+        run_id = uuid4()
+        original = RunInfo(run_id=run_id)
+        copied = original.model_copy(deep=True)
+        assert copied.run_id == original.run_id
+        assert copied == original
