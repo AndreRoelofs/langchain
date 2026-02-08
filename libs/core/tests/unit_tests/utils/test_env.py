@@ -149,3 +149,69 @@ def test_get_from_dict_or_env() -> None:
             )
             is None
         )
+
+
+# ---------------------------------------------------------------------------
+# get_from_dict_or_env edge cases
+# ---------------------------------------------------------------------------
+def test_get_from_dict_or_env_with_list_keys_first_match() -> None:
+    """get_from_dict_or_env with list of keys returns first matching key."""
+    data = {"first": "val1", "second": "val2"}
+    result = get_from_dict_or_env(data, ["first", "second"], "UNUSED_ENV")
+    assert result == "val1"
+
+
+def test_get_from_dict_or_env_with_list_keys_second_match() -> None:
+    """get_from_dict_or_env with list of keys falls back to second key."""
+    data = {"second": "val2"}
+    result = get_from_dict_or_env(data, ["first", "second"], "UNUSED_ENV")
+    assert result == "val2"
+
+
+def test_get_from_dict_or_env_falls_through_to_env() -> None:
+    """get_from_dict_or_env falls through to env var when key not in dict."""
+    os.environ["FALLBACK_ENV_KEY"] = "from_env"
+    try:
+        result = get_from_dict_or_env({}, "missing_key", "FALLBACK_ENV_KEY")
+        assert result == "from_env"
+    finally:
+        del os.environ["FALLBACK_ENV_KEY"]
+
+
+def test_get_from_dict_or_env_list_keys_falls_through_to_env() -> None:
+    """get_from_dict_or_env with list keys falls through to env when no match."""
+    os.environ["FALLBACK_ENV_KEY2"] = "env_value"
+    try:
+        result = get_from_dict_or_env({}, ["missing1", "missing2"], "FALLBACK_ENV_KEY2")
+        assert result == "env_value"
+    finally:
+        del os.environ["FALLBACK_ENV_KEY2"]
+
+
+def test_get_from_dict_or_env_with_falsy_dict_value() -> None:
+    """get_from_dict_or_env skips falsy dict values and falls to env/default."""
+    # Empty string is falsy in Python, so get_from_dict_or_env skips it
+    data = {"key": ""}
+    result = get_from_dict_or_env(data, "key", "UNUSED_ENV", default="default_val")
+    assert result == "default_val"
+
+
+def test_get_from_env_empty_env_value() -> None:
+    """get_from_env returns default when env var is empty string."""
+    os.environ["EMPTY_VAR"] = ""
+    try:
+        # os.getenv returns "", which is falsy
+        result = get_from_env("key", "EMPTY_VAR", default="fallback")
+        assert result == "fallback"
+    finally:
+        del os.environ["EMPTY_VAR"]
+
+
+def test_env_var_is_set_with_truthy_values() -> None:
+    """env_var_is_set returns True for various truthy values."""
+    for val in ["1", "true", "True", "yes", "anything"]:
+        os.environ["TEST_TRUTHY"] = val
+        try:
+            assert env_var_is_set("TEST_TRUTHY") is True, f"Failed for value: {val}"
+        finally:
+            del os.environ["TEST_TRUTHY"]

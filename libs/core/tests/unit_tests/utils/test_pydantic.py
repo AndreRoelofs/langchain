@@ -186,3 +186,222 @@ def test_create_model_v2() -> None:
         foo.model_json_schema()
 
     assert list(record) == []
+
+
+# ---------------------------------------------------------------------------
+# is_pydantic_v1_subclass / is_pydantic_v2_subclass
+# ---------------------------------------------------------------------------
+from langchain_core.utils.pydantic import (
+    is_pydantic_v1_subclass,
+    is_pydantic_v2_subclass,
+)
+
+
+def test_is_pydantic_v1_subclass_with_v1_model() -> None:
+    """Returns True for v1 BaseModel subclass."""
+
+    class MyV1Model(BaseModelV1):
+        x: int
+
+    assert is_pydantic_v1_subclass(MyV1Model) is True
+
+
+def test_is_pydantic_v1_subclass_with_v2_model() -> None:
+    """Returns False for v2 BaseModel subclass."""
+
+    class MyV2Model(BaseModel):
+        x: int
+
+    assert is_pydantic_v1_subclass(MyV2Model) is False
+
+
+def test_is_pydantic_v2_subclass_with_v2_model() -> None:
+    """Returns True for v2 BaseModel subclass."""
+
+    class MyV2Model(BaseModel):
+        x: int
+
+    assert is_pydantic_v2_subclass(MyV2Model) is True
+
+
+def test_is_pydantic_v2_subclass_with_v1_model() -> None:
+    """Returns False for v1 BaseModel subclass."""
+
+    class MyV1Model(BaseModelV1):
+        x: int
+
+    assert is_pydantic_v2_subclass(MyV1Model) is False
+
+
+# ---------------------------------------------------------------------------
+# is_basemodel_subclass edge cases
+# ---------------------------------------------------------------------------
+def test_is_basemodel_subclass_with_non_class() -> None:
+    """Returns False for non-class objects."""
+    assert is_basemodel_subclass(42) is False  # type: ignore[arg-type]
+    assert is_basemodel_subclass("string") is False  # type: ignore[arg-type]
+    assert is_basemodel_subclass(None) is False  # type: ignore[arg-type]
+
+
+def test_is_basemodel_subclass_with_generic_alias() -> None:
+    """Returns False for GenericAlias types."""
+    assert is_basemodel_subclass(list[int]) is False  # type: ignore[arg-type]
+    assert is_basemodel_subclass(dict[str, int]) is False  # type: ignore[arg-type]
+
+
+def test_is_basemodel_subclass_with_plain_class() -> None:
+    """Returns False for non-pydantic classes."""
+
+    class PlainClass:
+        pass
+
+    assert is_basemodel_subclass(PlainClass) is False
+
+
+# ---------------------------------------------------------------------------
+# is_basemodel_instance edge cases
+# ---------------------------------------------------------------------------
+def test_is_basemodel_instance_with_non_model() -> None:
+    """Returns False for non-model instances."""
+    assert is_basemodel_instance(42) is False
+    assert is_basemodel_instance("string") is False
+    assert is_basemodel_instance(None) is False
+    assert is_basemodel_instance([1, 2, 3]) is False
+
+
+# ---------------------------------------------------------------------------
+# get_fields edge cases
+# ---------------------------------------------------------------------------
+def test_get_fields_from_instance() -> None:
+    """get_fields works with a model instance (not just class)."""
+
+    class MyModel(BaseModel):
+        x: int
+        y: str = "default"
+
+    instance = MyModel(x=5)
+    fields = get_fields(instance)
+    assert "x" in fields
+    assert "y" in fields
+
+
+def test_get_fields_raises_for_non_model() -> None:
+    """get_fields raises TypeError for non-pydantic types."""
+    with pytest.raises(TypeError, match="Expected a Pydantic model"):
+        get_fields(str)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# get_pydantic_major_version (deprecated)
+# ---------------------------------------------------------------------------
+from langchain_core.utils.pydantic import get_pydantic_major_version
+
+
+def test_get_pydantic_major_version_returns_int() -> None:
+    """get_pydantic_major_version returns the major version as int."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        result = get_pydantic_major_version()
+    assert isinstance(result, int)
+    assert result == 2
+
+
+# ---------------------------------------------------------------------------
+# create_model (wrapper around create_model_v2)
+# ---------------------------------------------------------------------------
+from langchain_core.utils.pydantic import create_model
+
+
+def test_create_model_basic() -> None:
+    """create_model creates a model with field definitions."""
+    Model = create_model("TestModel", field1=(str, "default"), field2=(int, 0))
+    instance = Model()
+    assert instance.field1 == "default"  # type: ignore[attr-defined]
+    assert instance.field2 == 0  # type: ignore[attr-defined]
+
+
+def test_create_model_with_root() -> None:
+    """create_model with __root__ delegates to root model creation."""
+    Model = create_model("RootModel", __root__=(list[int], None))
+    schema = Model.model_json_schema()
+    assert schema["title"] == "RootModel"
+
+
+# ---------------------------------------------------------------------------
+# create_model_v2 with root types
+# ---------------------------------------------------------------------------
+def test_create_model_v2_with_root() -> None:
+    """create_model_v2 with root creates a RootModel."""
+    Model = create_model_v2("MyRoot", root=str)
+    schema = Model.model_json_schema()
+    assert schema["title"] == "MyRoot"
+
+
+def test_create_model_v2_with_root_and_default() -> None:
+    """create_model_v2 with root tuple creates model with default."""
+    Model = create_model_v2("MyRoot", root=(str, "hello"))
+    schema = Model.model_json_schema()
+    assert schema["title"] == "MyRoot"
+
+
+def test_create_model_v2_root_with_fields_raises() -> None:
+    """create_model_v2 raises when both root and field_definitions are provided."""
+    with pytest.raises(NotImplementedError, match="no other fields"):
+        create_model_v2("Bad", root=str, field_definitions={"extra": (int, 0)})
+
+
+def test_create_model_v2_with_reserved_name() -> None:
+    """create_model_v2 handles reserved pydantic names via remapping."""
+    Model = create_model_v2("ReservedModel", field_definitions={"schema": (str, "val")})
+    schema = Model.model_json_schema()
+    assert "schema" in str(schema) or "properties" in schema
+
+
+def test_create_model_v2_with_private_field() -> None:
+    """create_model_v2 handles fields starting with underscore via remapping."""
+    Model = create_model_v2("PrivateModel", field_definitions={"_hidden": (str, "val")})
+    schema = Model.model_json_schema()
+    assert "properties" in schema
+
+
+# ---------------------------------------------------------------------------
+# _create_subset_model_v2
+# ---------------------------------------------------------------------------
+def test_create_subset_model_v2_preserves_doc() -> None:
+    """_create_subset_model_v2 preserves docstring."""
+
+    class Original(BaseModel):
+        """Original docstring."""
+
+        x: int
+        y: str
+
+    subset = _create_subset_model_v2("Sub", Original, ["x"])
+    assert "Original docstring" in (subset.__doc__ or "")
+
+
+def test_create_subset_model_v2_custom_description() -> None:
+    """_create_subset_model_v2 allows custom field descriptions."""
+
+    class Original(BaseModel):
+        x: int = Field(description="Original desc")
+
+    subset = _create_subset_model_v2(
+        "Sub", Original, ["x"], descriptions={"x": "Custom desc"}
+    )
+    schema = subset.model_json_schema()
+    assert schema["properties"]["x"]["description"] == "Custom desc"
+
+
+def test_create_subset_model_v2_custom_fn_description() -> None:
+    """_create_subset_model_v2 allows custom function description."""
+
+    class Original(BaseModel):
+        """Original doc."""
+
+        x: int
+
+    subset = _create_subset_model_v2(
+        "Sub", Original, ["x"], fn_description="Custom function doc"
+    )
+    assert subset.__doc__ == "Custom function doc"

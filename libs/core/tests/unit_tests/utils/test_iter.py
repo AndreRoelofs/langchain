@@ -146,3 +146,84 @@ def test_batch_iterate(
 ) -> None:
     """Test batching function."""
     assert list(batch_iterate(input_size, input_iterable)) == expected_output
+
+
+# ---------------------------------------------------------------------------
+# batch_iterate with None size (returns single batch)
+# ---------------------------------------------------------------------------
+def test_batch_iterate_none_size() -> None:
+    """batch_iterate with size=None returns all items in a single batch."""
+    data = [1, 2, 3, 4, 5]
+    result = list(batch_iterate(None, data))
+    assert result == [[1, 2, 3, 4, 5]]
+
+
+def test_batch_iterate_none_size_empty() -> None:
+    """batch_iterate with size=None and empty iterable returns empty."""
+    result = list(batch_iterate(None, []))
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# batch_iterate edge cases
+# ---------------------------------------------------------------------------
+def test_batch_iterate_exact_multiple() -> None:
+    """batch_iterate with size that evenly divides the iterable."""
+    result = list(batch_iterate(3, [1, 2, 3, 4, 5, 6]))
+    assert result == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_batch_iterate_size_larger_than_iterable() -> None:
+    """batch_iterate with size larger than iterable returns single batch."""
+    result = list(batch_iterate(100, [1, 2, 3]))
+    assert result == [[1, 2, 3]]
+
+
+def test_batch_iterate_with_generator() -> None:
+    """batch_iterate works with generators, not just lists."""
+
+    def gen() -> "Iterator[int]":
+        yield from range(5)
+
+    from collections.abc import Iterator
+
+    result = list(batch_iterate(2, gen()))
+    assert result == [[0, 1], [2, 3], [4]]
+
+
+# ---------------------------------------------------------------------------
+# tee_peer cleanup behavior
+# ---------------------------------------------------------------------------
+def test_tee_peer_closes_iterator_when_last_peer() -> None:
+    """tee_peer closes the iterator when the last peer is done."""
+    closed = False
+
+    class CloseableIterator:
+        def __init__(self) -> None:
+            self.items = iter([1, 2, 3])
+
+        def __iter__(self) -> "CloseableIterator":
+            return self
+
+        def __next__(self) -> int:
+            return next(self.items)
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    it = CloseableIterator()
+    tee_obj = Tee(it, n=1)  # type: ignore[arg-type]
+    result = list(tee_obj[0])
+    assert result == [1, 2, 3]
+    assert closed is True
+
+
+def test_tee_large_n() -> None:
+    """Tee works with many child iterators."""
+    data = [10, 20, 30]
+    tee_obj = Tee(iter(data), n=5)
+    assert len(tee_obj) == 5
+
+    for i in range(5):
+        assert list(tee_obj[i]) == [10, 20, 30]

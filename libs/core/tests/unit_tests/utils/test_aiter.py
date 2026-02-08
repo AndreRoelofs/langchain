@@ -7,6 +7,7 @@ from langchain_core.utils.aiter import NoLock, Tee, abatch_iterate, aclosing, at
 
 async def test_tee_async_basic() -> None:
     """Test basic async tee functionality."""
+
     async def async_range(n: int) -> AsyncIterator[int]:
         for i in range(n):
             yield i
@@ -24,6 +25,7 @@ async def test_tee_async_basic() -> None:
 
 async def test_tee_async_len() -> None:
     """Test async Tee __len__ method."""
+
     async def async_range(n: int) -> AsyncIterator[int]:
         for i in range(n):
             yield i
@@ -34,6 +36,7 @@ async def test_tee_async_len() -> None:
 
 async def test_tee_async_getitem() -> None:
     """Test async Tee indexing."""
+
     async def async_range(n: int) -> AsyncIterator[int]:
         for i in range(n):
             yield i
@@ -46,6 +49,7 @@ async def test_tee_async_getitem() -> None:
 
 async def test_tee_async_context_manager() -> None:
     """Test async Tee as context manager."""
+
     async def async_range(n: int) -> AsyncIterator[int]:
         for i in range(n):
             yield i
@@ -59,6 +63,7 @@ async def test_tee_async_context_manager() -> None:
 
 async def test_tee_async_different_speeds() -> None:
     """Test async tee handles iterators advancing at different speeds."""
+
     async def async_range(n: int) -> AsyncIterator[int]:
         for i in range(n):
             yield i
@@ -87,6 +92,7 @@ async def test_atee() -> None:
 
 async def test_aclosing_basic() -> None:
     """Test basic aclosing functionality."""
+
     async def async_generator() -> AsyncIterator[int]:
         for i in range(3):
             yield i
@@ -100,6 +106,7 @@ async def test_aclosing_basic() -> None:
 
 async def test_aclosing_enters_correctly() -> None:
     """Test aclosing __aenter__ returns the wrapped object."""
+
     async def async_generator() -> AsyncIterator[int]:
         for i in range(3):
             yield i
@@ -124,6 +131,7 @@ async def test_no_lock_async() -> None:
 
 async def test_tee_async_empty_iterator() -> None:
     """Test async tee with empty iterator."""
+
     async def empty_gen() -> AsyncIterator[int]:
         return
         yield  # Make it a generator
@@ -162,3 +170,139 @@ async def test_abatch_iterate(
 
     output = [el async for el in iterator_]
     assert output == expected_output
+
+
+# ---------------------------------------------------------------------------
+# py_anext (deprecated)
+# ---------------------------------------------------------------------------
+import warnings
+
+from langchain_core.utils.aiter import py_anext
+
+
+async def test_py_anext_returns_next_item() -> None:
+    """py_anext returns the next item from async iterator."""
+
+    async def async_range(n: int) -> AsyncIterator[int]:
+        for i in range(n):
+            yield i
+
+    it = async_range(3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        result = await py_anext(it)
+    assert result == 0
+
+
+async def test_py_anext_with_default_on_exhausted() -> None:
+    """py_anext returns default when iterator is exhausted."""
+
+    async def empty_gen() -> AsyncIterator[int]:
+        return
+        yield
+
+    it = empty_gen()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        result = await py_anext(it, "default_val")
+    assert result == "default_val"
+
+
+async def test_py_anext_raises_stop_async_iteration() -> None:
+    """py_anext raises StopAsyncIteration when exhausted and no default."""
+
+    async def empty_gen() -> AsyncIterator[int]:
+        return
+        yield
+
+    it = empty_gen()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.raises(StopAsyncIteration):
+            await py_anext(it)
+
+
+async def test_py_anext_raises_type_error_for_non_iterator() -> None:
+    """py_anext raises TypeError for non-async-iterator."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.raises(TypeError, match="is not an async iterator"):
+            await py_anext(42)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# abatch_iterate edge cases
+# ---------------------------------------------------------------------------
+async def test_abatch_iterate_exact_multiple() -> None:
+    """abatch_iterate with size that evenly divides the iterable."""
+
+    async def async_range(n: int) -> AsyncIterator[int]:
+        for i in range(n):
+            yield i
+
+    result = [batch async for batch in abatch_iterate(3, async_range(6))]
+    assert result == [[0, 1, 2], [3, 4, 5]]
+
+
+async def test_abatch_iterate_size_larger_than_iterable() -> None:
+    """abatch_iterate with size larger than iterable returns single batch."""
+
+    async def async_range(n: int) -> AsyncIterator[int]:
+        for i in range(n):
+            yield i
+
+    result = [batch async for batch in abatch_iterate(100, async_range(3))]
+    assert result == [[0, 1, 2]]
+
+
+async def test_abatch_iterate_size_one() -> None:
+    """abatch_iterate with size=1 yields individual items as lists."""
+
+    async def async_gen() -> AsyncIterator[str]:
+        for s in ["a", "b", "c"]:
+            yield s
+
+    result = [batch async for batch in abatch_iterate(1, async_gen())]
+    assert result == [["a"], ["b"], ["c"]]
+
+
+# ---------------------------------------------------------------------------
+# Tee with slice access
+# ---------------------------------------------------------------------------
+async def test_tee_async_slice() -> None:
+    """Test async Tee slicing."""
+
+    async def async_range(n: int) -> AsyncIterator[int]:
+        for i in range(n):
+            yield i
+
+    tee_obj = Tee(async_range(3), n=3)
+    sliced = tee_obj[0:2]
+    assert len(sliced) == 2
+
+
+# ---------------------------------------------------------------------------
+# aclosing with non-generator async iterator
+# ---------------------------------------------------------------------------
+async def test_aclosing_with_async_iterator_no_aclose() -> None:
+    """aclosing works with async iterators that don't have aclose."""
+
+    class SimpleAsyncIter:
+        def __init__(self) -> None:
+            self.items = [1, 2, 3]
+            self.idx = 0
+
+        def __aiter__(self) -> "SimpleAsyncIter":
+            return self
+
+        async def __anext__(self) -> int:
+            if self.idx >= len(self.items):
+                raise StopAsyncIteration
+            val = self.items[self.idx]
+            self.idx += 1
+            return val
+
+    it = SimpleAsyncIter()
+    async with aclosing(it) as ait:
+        result = [x async for x in ait]
+    assert result == [1, 2, 3]

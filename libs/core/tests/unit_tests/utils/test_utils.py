@@ -386,3 +386,378 @@ def test_generation_chunk_addition_type_error() -> None:
     chunk2 = GenerationChunk(text="Non-empty text", generation_info={"len": 14})
     result = chunk1 + chunk2
     assert result == GenerationChunk(text="Non-empty text", generation_info={"len": 14})
+
+
+# ---------------------------------------------------------------------------
+# xor_args
+# ---------------------------------------------------------------------------
+from langchain_core.utils.utils import xor_args
+
+
+def test_xor_args_exactly_one_defined() -> None:
+    """xor_args passes when exactly one arg per group is provided."""
+
+    @xor_args(("a", "b"))
+    def fn(*, a: str | None = None, b: str | None = None) -> str:
+        return a or b or ""
+
+    assert fn(a="hello") == "hello"
+    assert fn(b="world") == "world"
+
+
+def test_xor_args_none_defined_raises() -> None:
+    """xor_args raises when no arg in the group is provided."""
+
+    @xor_args(("a", "b"))
+    def fn(*, a: str | None = None, b: str | None = None) -> str:
+        return a or b or ""
+
+    with pytest.raises(ValueError, match="Exactly one argument"):
+        fn()
+
+
+def test_xor_args_both_defined_raises() -> None:
+    """xor_args raises when more than one arg in the group is provided."""
+
+    @xor_args(("a", "b"))
+    def fn(*, a: str | None = None, b: str | None = None) -> str:
+        return a or b or ""
+
+    with pytest.raises(ValueError, match="Exactly one argument"):
+        fn(a="hello", b="world")
+
+
+def test_xor_args_multiple_groups() -> None:
+    """xor_args works with multiple independent groups."""
+
+    @xor_args(("a", "b"), ("c", "d"))
+    def fn(
+        *,
+        a: str | None = None,
+        b: str | None = None,
+        c: str | None = None,
+        d: str | None = None,
+    ) -> str:
+        return f"{a or b}-{c or d}"
+
+    assert fn(a="1", c="2") == "1-2"
+    assert fn(b="1", d="2") == "1-2"
+
+    with pytest.raises(ValueError, match="Exactly one argument"):
+        fn(a="1", b="2", c="3")
+
+
+# ---------------------------------------------------------------------------
+# raise_for_status_with_text
+# ---------------------------------------------------------------------------
+from langchain_core.utils.utils import raise_for_status_with_text
+
+
+def test_raise_for_status_with_text_success() -> None:
+    """No error raised for successful response."""
+    from unittest.mock import MagicMock
+
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    raise_for_status_with_text(response)
+
+
+def test_raise_for_status_with_text_error() -> None:
+    """ValueError raised with response text for failed response."""
+    from unittest.mock import MagicMock
+
+    from requests import HTTPError
+
+    response = MagicMock()
+    response.raise_for_status.side_effect = HTTPError("404 Not Found")
+    response.text = "Page not found"
+
+    with pytest.raises(ValueError, match="Page not found"):
+        raise_for_status_with_text(response)
+
+
+# ---------------------------------------------------------------------------
+# mock_now
+# ---------------------------------------------------------------------------
+import datetime
+
+from langchain_core.utils.utils import mock_now
+
+
+def test_mock_now_overrides_datetime_now() -> None:
+    """mock_now should override datetime.datetime.now()."""
+    fake_time = datetime.datetime(2020, 1, 15, 12, 30, 45)
+    with mock_now(fake_time):
+        assert datetime.datetime.now() == fake_time
+
+    # After context, datetime.now() should return real time
+    assert datetime.datetime.now() != fake_time
+
+
+def test_mock_now_preserves_microseconds() -> None:
+    """mock_now should preserve microseconds from the provided datetime."""
+    fake_time = datetime.datetime(2023, 6, 15, 10, 20, 30, 123456)
+    with mock_now(fake_time):
+        now = datetime.datetime.now()
+        assert now.microsecond == 123456
+        assert now.year == 2023
+        assert now.month == 6
+
+
+def test_mock_now_yields_mocked_class() -> None:
+    """mock_now should yield the mocked datetime class."""
+    fake_time = datetime.datetime(2020, 1, 1)
+    with mock_now(fake_time) as mocked_dt:
+        assert mocked_dt.now() == fake_time
+
+
+# ---------------------------------------------------------------------------
+# convert_to_secret_str
+# ---------------------------------------------------------------------------
+from langchain_core.utils.utils import convert_to_secret_str
+
+
+def test_convert_to_secret_str_from_string() -> None:
+    """Converts a plain string to SecretStr."""
+    result = convert_to_secret_str("my_secret")
+    assert isinstance(result, SecretStr)
+    assert result.get_secret_value() == "my_secret"
+
+
+def test_convert_to_secret_str_from_secret_str() -> None:
+    """Returns SecretStr unchanged."""
+    original = SecretStr("already_secret")
+    result = convert_to_secret_str(original)
+    assert result is original
+
+
+def test_convert_to_secret_str_empty_string() -> None:
+    """Converts an empty string to SecretStr."""
+    result = convert_to_secret_str("")
+    assert isinstance(result, SecretStr)
+    assert result.get_secret_value() == ""
+
+
+# ---------------------------------------------------------------------------
+# build_extra_kwargs (deprecated but still public)
+# ---------------------------------------------------------------------------
+from langchain_core.utils.utils import build_extra_kwargs
+
+
+def test_build_extra_kwargs_moves_unknown_fields() -> None:
+    """Unknown fields are moved to extra_kwargs."""
+    extra = {}
+    values = {"known_field": "v1", "unknown_field": "v2"}
+    required = {"known_field"}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = build_extra_kwargs(extra, values, required)
+
+    assert result == {"unknown_field": "v2"}
+    assert "unknown_field" not in values
+
+
+def test_build_extra_kwargs_raises_on_duplicate() -> None:
+    """Raises ValueError if a field is in both values and extra_kwargs."""
+    extra = {"dup": "from_extra"}
+    values = {"dup": "from_values"}
+    required = set()
+
+    with pytest.raises(ValueError, match="Found dup supplied twice"):
+        build_extra_kwargs(extra, values, required)
+
+
+def test_build_extra_kwargs_raises_on_overlap_with_required() -> None:
+    """Raises ValueError if extra_kwargs contains a required field name."""
+    extra = {"required_field": "in_extra"}
+    values = {}
+    required = {"required_field"}
+
+    with pytest.raises(ValueError, match="should be specified explicitly"):
+        build_extra_kwargs(extra, values, required)
+
+
+# ---------------------------------------------------------------------------
+# _build_model_kwargs
+# ---------------------------------------------------------------------------
+import warnings
+
+from langchain_core.utils.utils import _build_model_kwargs
+
+
+def test_build_model_kwargs_moves_unknown_fields() -> None:
+    """Unknown fields are moved to model_kwargs."""
+    values = {"known": "v1", "extra_param": "v2", "model_kwargs": {}}
+    required = {"known", "model_kwargs"}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = _build_model_kwargs(values, required)
+
+    assert result["model_kwargs"] == {"extra_param": "v2"}
+    assert "extra_param" not in result
+
+
+def test_build_model_kwargs_raises_on_duplicate() -> None:
+    """Raises ValueError if a field is in both values and model_kwargs."""
+    values = {"field1": "v1", "model_kwargs": {"field1": "v2"}}
+    required = {"field1", "model_kwargs"}
+
+    with pytest.raises(ValueError, match="Found field1 supplied twice"):
+        _build_model_kwargs(values, required)
+
+
+def test_build_model_kwargs_warns_on_overlap_with_required() -> None:
+    """Warns and moves required fields out of model_kwargs."""
+    values = {"model_kwargs": {"known": "v1"}}
+    required = {"known", "model_kwargs"}
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = _build_model_kwargs(values, required)
+
+    assert result["known"] == "v1"
+    assert result["model_kwargs"] == {}
+    assert len(w) > 0
+    assert "should be specified explicitly" in str(w[0].message)
+
+
+# ---------------------------------------------------------------------------
+# ensure_id
+# ---------------------------------------------------------------------------
+from langchain_core.utils.utils import LC_AUTO_PREFIX, ensure_id
+
+
+def test_ensure_id_with_value() -> None:
+    """Returns provided ID unchanged."""
+    assert ensure_id("my-id") == "my-id"
+
+
+def test_ensure_id_with_none() -> None:
+    """Generates a new lc_ prefixed UUID when None."""
+    result = ensure_id(None)
+    assert result.startswith(LC_AUTO_PREFIX)
+    # The rest should be a valid UUID4 string
+    import uuid
+
+    uuid_part = result[len(LC_AUTO_PREFIX) :]
+    uuid.UUID(uuid_part, version=4)  # should not raise
+
+
+def test_ensure_id_with_empty_string() -> None:
+    """Generates a new ID when empty string (falsy)."""
+    result = ensure_id("")
+    assert result.startswith(LC_AUTO_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# from_env with list of keys
+# ---------------------------------------------------------------------------
+def test_from_env_with_list_keys_first_found() -> None:
+    """from_env with list of keys returns first matching env var."""
+    with patch.dict(os.environ, {"KEY_A": "value_a", "KEY_B": "value_b"}, clear=True):
+        get_value = from_env(["KEY_A", "KEY_B"])
+        assert get_value() == "value_a"
+
+
+def test_from_env_with_list_keys_second_found() -> None:
+    """from_env with list of keys falls back to second key."""
+    with patch.dict(os.environ, {"KEY_B": "value_b"}, clear=True):
+        get_value = from_env(["KEY_A", "KEY_B"])
+        assert get_value() == "value_b"
+
+
+def test_from_env_with_list_keys_none_found_default() -> None:
+    """from_env with list of keys returns default when no keys found."""
+    with patch.dict(os.environ, {}, clear=True):
+        get_value = from_env(["KEY_A", "KEY_B"], default="fallback")
+        assert get_value() == "fallback"
+
+
+def test_from_env_with_list_keys_none_found_raises() -> None:
+    """from_env with list of keys raises when no keys found and no default."""
+    with patch.dict(os.environ, {}, clear=True):
+        get_value = from_env(["KEY_A", "KEY_B"])
+        with pytest.raises(ValueError, match="Did not find"):
+            get_value()
+
+
+def test_from_env_with_none_default() -> None:
+    """from_env with default=None returns None."""
+    with patch.dict(os.environ, {}, clear=True):
+        get_value = from_env("MISSING_KEY", default=None)
+        assert get_value() is None
+
+
+# ---------------------------------------------------------------------------
+# secret_from_env with list of keys
+# ---------------------------------------------------------------------------
+def test_secret_from_env_with_list_keys_first_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """secret_from_env with list of keys returns first matching env var."""
+    monkeypatch.setenv("SEC_A", "secret_a")
+    monkeypatch.setenv("SEC_B", "secret_b")
+    get_secret = secret_from_env(["SEC_A", "SEC_B"])
+    result = get_secret()
+    assert isinstance(result, SecretStr)
+    assert result.get_secret_value() == "secret_a"
+
+
+def test_secret_from_env_with_list_keys_second_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """secret_from_env with list of keys falls back to second key."""
+    monkeypatch.delenv("SEC_A", raising=False)
+    monkeypatch.setenv("SEC_B", "secret_b")
+    get_secret = secret_from_env(["SEC_A", "SEC_B"])
+    result = get_secret()
+    assert isinstance(result, SecretStr)
+    assert result.get_secret_value() == "secret_b"
+
+
+def test_secret_from_env_with_list_keys_none_found_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """secret_from_env with list of keys returns default when no keys found."""
+    monkeypatch.delenv("SEC_A", raising=False)
+    monkeypatch.delenv("SEC_B", raising=False)
+    get_secret = secret_from_env(["SEC_A", "SEC_B"], default=None)
+    assert get_secret() is None
+
+
+# ---------------------------------------------------------------------------
+# check_package_version - more cases for lt_version and lte_version
+# ---------------------------------------------------------------------------
+def test_check_package_version_lt_version_pass() -> None:
+    """lt_version passes when actual version is less."""
+    with patch("langchain_core.utils.utils.version", return_value="0.1.0"):
+        check_package_version("stub", lt_version="0.2.0")
+
+
+def test_check_package_version_lt_version_fail() -> None:
+    """lt_version fails when actual version is equal."""
+    with patch("langchain_core.utils.utils.version", return_value="0.2.0"):
+        with pytest.raises(ValueError, match="< 0.2.0"):
+            check_package_version("stub", lt_version="0.2.0")
+
+
+def test_check_package_version_lte_version_pass() -> None:
+    """lte_version passes when actual version is equal."""
+    with patch("langchain_core.utils.utils.version", return_value="0.2.0"):
+        check_package_version("stub", lte_version="0.2.0")
+
+
+def test_check_package_version_lte_version_fail() -> None:
+    """lte_version fails when actual version is greater."""
+    with patch("langchain_core.utils.utils.version", return_value="0.3.0"):
+        with pytest.raises(ValueError, match="<= 0.2.0"):
+            check_package_version("stub", lte_version="0.2.0")
+
+
+def test_check_package_version_gte_version_fail() -> None:
+    """gte_version fails when actual version is less."""
+    with patch("langchain_core.utils.utils.version", return_value="0.0.9"):
+        with pytest.raises(ValueError, match=">= 0.1.0"):
+            check_package_version("stub", gte_version="0.1.0")
