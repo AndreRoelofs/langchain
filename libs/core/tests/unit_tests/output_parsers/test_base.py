@@ -9,7 +9,6 @@ from typing_extensions import override
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers.base import (
-    BaseGenerationOutputParser,
     BaseLLMOutputParser,
     BaseOutputParser,
 )
@@ -61,18 +60,6 @@ class NoTypeParser(BaseOutputParser[str]):
     @override
     def parse(self, text: str) -> str:
         return text
-
-
-class ChatOnlyGenerationParser(BaseGenerationOutputParser[str]):
-    """Generation parser that extracts content from chat generations."""
-
-    @override
-    def parse_result(self, result: list[Generation], *, partial: bool = False) -> str:
-        generation = result[0]
-        if not isinstance(generation, ChatGeneration):
-            msg = "This parser only works with ChatGeneration."
-            raise OutputParserException(msg)
-        return str(generation.message.content)
 
 
 # --- BaseOutputParser tests ---
@@ -250,48 +237,6 @@ class TestBaseOutputParserInputType:
         parser = IntParser()
         # InputType should accept str or BaseMessage
         assert parser.InputType is not None
-
-
-# --- BaseGenerationOutputParser tests ---
-
-
-class TestBaseGenerationOutputParser:
-    """Tests for BaseGenerationOutputParser."""
-
-    def test_invoke_with_ai_message(self) -> None:
-        parser = ChatOnlyGenerationParser()
-        msg = AIMessage(content="hello")
-        assert parser.invoke(msg) == "hello"
-
-    def test_invoke_with_string(self) -> None:
-        parser = ChatOnlyGenerationParser()
-        # String input creates a plain Generation, not ChatGeneration
-        with pytest.raises(
-            OutputParserException, match="only works with ChatGeneration"
-        ):
-            parser.invoke("hello")
-
-    async def test_ainvoke_with_ai_message(self) -> None:
-        parser = ChatOnlyGenerationParser()
-        msg = AIMessage(content="async hello")
-        result = await parser.ainvoke(msg)
-        assert result == "async hello"
-
-    async def test_ainvoke_with_string_raises(self) -> None:
-        parser = ChatOnlyGenerationParser()
-        with pytest.raises(
-            OutputParserException, match="only works with ChatGeneration"
-        ):
-            await parser.ainvoke("hello")
-
-    def test_input_type(self) -> None:
-        parser = ChatOnlyGenerationParser()
-        assert parser.InputType is not None
-
-    def test_output_type(self) -> None:
-        parser = ChatOnlyGenerationParser()
-        # Generic T, returns T
-        assert parser.OutputType is not None
 
 
 # --- BaseLLMOutputParser tests ---
