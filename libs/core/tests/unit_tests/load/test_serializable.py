@@ -570,8 +570,9 @@ def test_serializable_with_secret_aliases() -> None:
 
 def test_is_field_useful_with_dict_default_factory() -> None:
     """Test _is_field_useful() with dict default_factory."""
-    from langchain_core.load.serializable import _is_field_useful
     from pydantic import Field
+
+    from langchain_core.load.serializable import _is_field_useful
 
     class ModelWithDictDefault(Serializable):
         data: dict = Field(default_factory=dict)
@@ -588,8 +589,9 @@ def test_is_field_useful_with_dict_default_factory() -> None:
 
 def test_is_field_useful_with_list_default_factory() -> None:
     """Test _is_field_useful() with list default_factory."""
-    from langchain_core.load.serializable import _is_field_useful
     from pydantic import Field
+
+    from langchain_core.load.serializable import _is_field_useful
 
     class ModelWithListDefault(Serializable):
         items: list = Field(default_factory=list)
@@ -633,9 +635,10 @@ def test_is_field_useful_with_nonexistent_field() -> None:
 
 def test_try_neq_default_with_identity_check() -> None:
     """Test _try_neq_default() falls back to identity check."""
-    from langchain_core.load.serializable import _try_neq_default
     from pydantic import Field
     from pydantic.fields import FieldInfo
+
+    from langchain_core.load.serializable import _try_neq_default
 
     class UncomparableObj:
         def __eq__(self, other: object) -> bool:
@@ -699,3 +702,681 @@ def test_serializable_get_lc_namespace() -> None:
     assert "unit_tests" in namespace
     assert "load" in namespace
     assert "test_serializable" in namespace
+
+
+# ---------------------------------------------------------------------------
+# Snapshot tests for _try_neq_default edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_try_neq_default_with_all_fallback() -> None:
+    """Test _try_neq_default falls back to all() when bool() on != result fails.
+
+    The code path is:
+    1. bool(field.get_default() != value) -> raises because bool() fails on result
+    2. all(field.get_default() != value) -> works because all() iterates the result
+
+    To trigger this, __ne__ must return an iterable whose bool() raises.
+    """
+    from pydantic.fields import FieldInfo
+
+    from langchain_core.load.serializable import _try_neq_default
+
+    class ArrayLikeBoolResult:
+        """Result of comparison that raises on bool() but supports all()."""
+
+        def __init__(self, values: list[bool]) -> None:
+            self.values = values
+
+        def __bool__(self) -> bool:
+            msg = "Ambiguous truth value"
+            raise ValueError(msg)
+
+        def __iter__(self) -> "iter":
+            return iter(self.values)
+
+    class ArrayLikeNeq:
+        """Object whose != directly returns an ArrayLikeBoolResult.
+
+        Override __ne__ to return an iterable result whose bool() raises.
+        """
+
+        def __init__(self, val: int) -> None:
+            self.val = val
+
+        def __ne__(self, other: object) -> "ArrayLikeBoolResult":  # type: ignore[override]
+            if isinstance(other, ArrayLikeNeq):
+                return ArrayLikeBoolResult([self.val != other.val])
+            return ArrayLikeBoolResult([True])
+
+        def __eq__(self, other: object) -> bool:  # type: ignore[override]
+            if isinstance(other, ArrayLikeNeq):
+                return self.val == other.val
+            return NotImplemented
+
+    default_obj = ArrayLikeNeq(1)
+    field = FieldInfo(default=default_obj)
+
+    # Same value: != returns ArrayLikeBoolResult([False]),
+    # bool() raises, all([False]) -> False
+    assert not _try_neq_default(ArrayLikeNeq(1), field)
+    # Different value: != returns ArrayLikeBoolResult([True]),
+    # bool() raises, all([True]) -> True
+    assert _try_neq_default(ArrayLikeNeq(2), field)
+
+
+def test_try_neq_default_returns_false_on_total_failure() -> None:
+    """Test _try_neq_default returns False when all comparison paths fail."""
+    from pydantic.fields import FieldInfo
+
+    from langchain_core.load.serializable import _try_neq_default
+
+    class TotallyUncomparable:
+        def __eq__(self, other: object) -> bool:
+            msg = "no eq"
+            raise TypeError(msg)
+
+        def __ne__(self, other: object) -> bool:
+            msg = "no ne"
+            raise TypeError(msg)
+
+        def __bool__(self) -> bool:
+            msg = "no bool"
+            raise TypeError(msg)
+
+    obj = TotallyUncomparable()
+    # default is a *different* object but identity check (is not) should return True
+    field = FieldInfo(default=TotallyUncomparable())
+    # Since value is not default → identity check says True
+    assert _try_neq_default(obj, field)
+
+    # When default IS the same identity → returns False
+    field_same = FieldInfo(default=obj)
+    assert not _try_neq_default(obj, field_same)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot tests for _is_field_useful edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_is_field_useful_falsy_value_differs_from_default() -> None:
+    """Test _is_field_useful with falsy value (0) that differs from non-zero default."""
+    from langchain_core.load.serializable import _is_field_useful
+
+    class ModelFalsyNonDefault(Serializable):
+        count: int = 5
+
+    model = ModelFalsyNonDefault(count=0)
+    # 0 is falsy, but default is 5 → should be useful
+    assert _is_field_useful(model, "count", 0)
+
+
+def test_is_field_useful_falsy_value_matches_default() -> None:
+    """Test _is_field_useful with falsy value matching the default."""
+    from langchain_core.load.serializable import _is_field_useful
+
+    class ModelFalsyDefault(Serializable):
+        count: int = 0
+
+    model = ModelFalsyDefault(count=0)
+    # 0 is falsy and matches default → not useful
+    assert not _is_field_useful(model, "count", 0)
+
+
+def test_is_field_useful_none_value_with_none_default() -> None:
+    """Test _is_field_useful with None value and None default."""
+    from langchain_core.load.serializable import _is_field_useful
+
+    class ModelNoneDefault(Serializable):
+        value: str | None = None
+
+    model = ModelNoneDefault(value=None)
+    assert not _is_field_useful(model, "value", None)
+
+
+def test_is_field_useful_empty_string_with_string_default() -> None:
+    """Test _is_field_useful with empty string vs non-empty default."""
+    from langchain_core.load.serializable import _is_field_useful
+
+    class ModelStrDefault(Serializable):
+        name: str = "hello"
+
+    model = ModelStrDefault(name="")
+    # "" is falsy, default is "hello" → should be useful
+    assert _is_field_useful(model, "name", "")
+
+
+# ---------------------------------------------------------------------------
+# Snapshot tests for to_json with MRO secret merging
+# ---------------------------------------------------------------------------
+
+
+def test_to_json_mro_secret_merging() -> None:
+    """Test to_json merges secrets from parent and child classes via MRO."""
+
+    class Parent(Serializable):
+        parent_key: str = "parent_secret"
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return True
+
+        @property
+        def lc_secrets(self) -> dict[str, str]:
+            return {"parent_key": "PARENT_KEY_ENV"}
+
+    class Child(Parent):
+        child_key: str = "child_secret"
+
+        @property
+        def lc_secrets(self) -> dict[str, str]:
+            return {"child_key": "CHILD_KEY_ENV"}
+
+    child = Child(parent_key="p_val", child_key="c_val")
+    serialized = child.to_json()
+
+    assert serialized["type"] == "constructor"
+    kwargs = serialized["kwargs"]
+    # Both parent and child secrets should be masked
+    assert kwargs["parent_key"] == {"lc": 1, "type": "secret", "id": ["PARENT_KEY_ENV"]}
+    assert kwargs["child_key"] == {"lc": 1, "type": "secret", "id": ["CHILD_KEY_ENV"]}
+
+
+def test_to_json_secret_included_even_if_not_in_kwargs() -> None:
+    """Test to_json includes secrets even if not iterated via model fields."""
+
+    class ModelWithOptionalSecret(Serializable):
+        api_key: str | None = None
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return True
+
+        @property
+        def lc_secrets(self) -> dict[str, str]:
+            return {"api_key": "API_KEY_ENV"}
+
+    # Secret has a value → should appear as masked
+    model = ModelWithOptionalSecret(api_key="actual_secret")
+    serialized = model.to_json()
+    assert serialized["kwargs"]["api_key"] == {
+        "lc": 1,
+        "type": "secret",
+        "id": ["API_KEY_ENV"],
+    }
+
+
+def test_to_json_secret_none_not_included() -> None:
+    """Test to_json does not include a secret key when its value is None."""
+
+    class ModelWithOptionalSecret(Serializable):
+        api_key: str | None = None
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return True
+
+        @property
+        def lc_secrets(self) -> dict[str, str]:
+            return {"api_key": "API_KEY_ENV"}
+
+    model = ModelWithOptionalSecret()
+    serialized = model.to_json()
+    # api_key is None → should not be added
+    assert "api_key" not in serialized["kwargs"]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot tests for _replace_secrets edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_replace_secrets_deeply_nested() -> None:
+    """Test _replace_secrets with 3-level nested path."""
+    from langchain_core.load.serializable import _replace_secrets
+
+    root = {"a": {"b": {"c": "secret_val"}}}
+    secrets_map = {"a.b.c": "DEEP_SECRET"}
+
+    result = _replace_secrets(root, secrets_map)
+
+    assert result["a"]["b"]["c"] == {
+        "lc": 1,
+        "type": "secret",
+        "id": ["DEEP_SECRET"],
+    }
+    # Original untouched
+    assert root["a"]["b"]["c"] == "secret_val"
+
+
+def test_replace_secrets_does_not_mutate_original() -> None:
+    """Test _replace_secrets creates copies at each nesting level."""
+    from langchain_core.load.serializable import _replace_secrets
+
+    inner = {"key": "val"}
+    root = {"outer": inner}
+    secrets_map = {"outer.key": "SECRET"}
+
+    result = _replace_secrets(root, secrets_map)
+
+    # The inner dict in result should be a different object
+    assert result["outer"] is not inner
+    assert inner["key"] == "val"
+
+
+def test_replace_secrets_multiple_secrets() -> None:
+    """Test _replace_secrets with multiple secrets in one dict."""
+    from langchain_core.load.serializable import _replace_secrets
+
+    root = {"key1": "v1", "key2": "v2", "plain": "data"}
+    secrets_map = {"key1": "SECRET_1", "key2": "SECRET_2"}
+
+    result = _replace_secrets(root, secrets_map)
+
+    assert result["key1"] == {"lc": 1, "type": "secret", "id": ["SECRET_1"]}
+    assert result["key2"] == {"lc": 1, "type": "secret", "id": ["SECRET_2"]}
+    assert result["plain"] == "data"
+
+
+# ---------------------------------------------------------------------------
+# Snapshot tests for to_json_not_implemented edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_to_json_not_implemented_repr_snapshot() -> None:
+    """Test to_json_not_implemented includes repr of the object."""
+    from langchain_core.load.serializable import to_json_not_implemented
+
+    class CustomRepr:
+        def __repr__(self) -> str:
+            return "CustomRepr(special=True)"
+
+    result = to_json_not_implemented(CustomRepr())
+    assert result == {
+        "lc": 1,
+        "type": "not_implemented",
+        "id": [
+            "tests",
+            "unit_tests",
+            "load",
+            "test_serializable",
+            "CustomRepr",
+        ],
+        "repr": "CustomRepr(special=True)",
+    }
+
+
+def test_to_json_not_implemented_with_broken_repr() -> None:
+    """Test to_json_not_implemented gracefully handles repr failure."""
+    from langchain_core.load.serializable import to_json_not_implemented
+
+    class BrokenRepr:
+        def __repr__(self) -> str:
+            msg = "repr is broken"
+            raise RuntimeError(msg)
+
+    result = to_json_not_implemented(BrokenRepr())
+    assert result["type"] == "not_implemented"
+    assert result["lc"] == 1
+    # repr should be None since repr() raised
+    assert result["repr"] is None
+
+
+def test_to_json_not_implemented_with_named_function() -> None:
+    """Test to_json_not_implemented with a function uses __name__ path."""
+    from langchain_core.load.serializable import to_json_not_implemented
+
+    def my_func() -> None:
+        pass
+
+    result = to_json_not_implemented(my_func)
+    assert result["id"][-1] == "my_func"
+    assert result["repr"] is not None
+
+
+def test_to_json_not_implemented_with_lambda() -> None:
+    """Test to_json_not_implemented with a lambda."""
+    from langchain_core.load.serializable import to_json_not_implemented
+
+    f = lambda x: x  # noqa: E731
+    result = to_json_not_implemented(f)
+    assert result["type"] == "not_implemented"
+    assert result["id"][-1] == "<lambda>"
+
+
+# ---------------------------------------------------------------------------
+# Snapshot test for Serializable model_config
+# ---------------------------------------------------------------------------
+
+
+def test_serializable_extra_fields_ignored() -> None:
+    """Test Serializable ignores extra fields due to model_config."""
+
+    class StrictModel(Serializable):
+        value: int
+
+    # extra="ignore" should silently drop unknown fields
+    model = StrictModel(value=1, unknown_field="dropped")  # type: ignore[call-arg]
+    assert model.value == 1
+    assert not hasattr(model, "unknown_field")
+
+
+# ---------------------------------------------------------------------------
+# Snapshot for to_json full output structure
+# ---------------------------------------------------------------------------
+
+
+def test_to_json_full_output_snapshot() -> None:
+    """Snapshot of the full to_json() output structure for a serializable model."""
+
+    class SnapshotModel(Serializable):
+        name: str
+        count: int
+        tags: list[str] = Field(default_factory=list)
+        metadata: dict[str, str] = Field(default_factory=dict)
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return True
+
+    model = SnapshotModel(name="test", count=5, tags=["a", "b"])
+    result = model.to_json()
+
+    assert result == {
+        "lc": 1,
+        "type": "constructor",
+        "id": [
+            "tests",
+            "unit_tests",
+            "load",
+            "test_serializable",
+            "SnapshotModel",
+        ],
+        "kwargs": {
+            "name": "test",
+            "count": 5,
+            "tags": ["a", "b"],
+        },
+    }
+    # metadata should be absent since it's empty dict matching default_factory=dict
+    assert "metadata" not in result["kwargs"]
+
+
+def test_to_json_not_implemented_output_snapshot() -> None:
+    """Snapshot of to_json_not_implemented() output for non-serializable class."""
+
+    class NotSerializableModel(Serializable):
+        value: int
+
+    model = NotSerializableModel(value=42)
+    result = model.to_json()
+
+    assert result == {
+        "lc": 1,
+        "type": "not_implemented",
+        "id": [
+            "tests",
+            "unit_tests",
+            "load",
+            "test_serializable",
+            "NotSerializableModel",
+        ],
+        "repr": "NotSerializableModel(value=42)",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Snapshot for repr_args filtering
+# ---------------------------------------------------------------------------
+
+
+def test_repr_args_filters_defaults_snapshot() -> None:
+    """Snapshot: __repr_args__() omits fields matching their defaults."""
+
+    class ReprModel(Serializable):
+        required: int
+        optional_str: str = "default"
+        optional_int: int = 10
+
+    model = ReprModel(required=42, optional_str="default", optional_int=10)
+    repr_keys = [k for k, _ in model.__repr_args__()]
+    # required is always present; optional fields matching defaults are omitted
+    assert "required" in repr_keys
+    assert "optional_str" not in repr_keys
+    assert "optional_int" not in repr_keys
+
+
+def test_repr_args_includes_non_default_values() -> None:
+    """Snapshot: __repr_args__() includes fields with non-default values."""
+
+    class ReprModel(Serializable):
+        required: int
+        optional_str: str = "default"
+        optional_int: int = 10
+
+    model = ReprModel(required=1, optional_str="custom", optional_int=99)
+    repr_keys = [k for k, _ in model.__repr_args__()]
+    assert "required" in repr_keys
+    assert "optional_str" in repr_keys
+    assert "optional_int" in repr_keys
+
+
+# ---------------------------------------------------------------------------
+# Snapshot for try_neq_default via model_fields
+# ---------------------------------------------------------------------------
+
+
+def test_try_neq_default_with_default_factory() -> None:
+    """Test try_neq_default with default_factory field.
+
+    Note: field.get_default() for default_factory returns None (not the factory
+    result), so try_neq_default sees [] != None → True. The `_is_field_useful`
+    function has separate logic for default_factory=list/dict.
+    """
+    from langchain_core.load.serializable import try_neq_default
+
+    class FactoryModel(Serializable):
+        items: list[int] = Field(default_factory=list)
+
+    model = FactoryModel(items=[])
+    # [] != field.get_default() (None) → True
+    assert try_neq_default([], "items", model)
+
+    model2 = FactoryModel(items=[1, 2])
+    assert try_neq_default([1, 2], "items", model2)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot for lc_id with non-generic class
+# ---------------------------------------------------------------------------
+
+
+def test_lc_id_snapshot() -> None:
+    """Snapshot: lc_id() returns namespace + class name."""
+
+    class MySerializable(Serializable):
+        value: int
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return True
+
+    assert MySerializable.lc_id() == [
+        "tests",
+        "unit_tests",
+        "load",
+        "test_serializable",
+        "MySerializable",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot: BaseSerialized TypedDicts structure
+# ---------------------------------------------------------------------------
+
+
+def test_serialized_constructor_typeddict_fields() -> None:
+    """Snapshot: SerializedConstructor has the expected fields."""
+    from langchain_core.load.serializable import SerializedConstructor
+
+    sc: SerializedConstructor = {
+        "lc": 1,
+        "type": "constructor",
+        "id": ["a", "b"],
+        "kwargs": {"x": 1},
+    }
+    assert sc["lc"] == 1
+    assert sc["type"] == "constructor"
+    assert sc["id"] == ["a", "b"]
+    assert sc["kwargs"] == {"x": 1}
+
+
+def test_serialized_secret_typeddict_fields() -> None:
+    """Snapshot: SerializedSecret has the expected fields."""
+    from langchain_core.load.serializable import SerializedSecret
+
+    ss: SerializedSecret = {
+        "lc": 1,
+        "type": "secret",
+        "id": ["MY_SECRET"],
+    }
+    assert ss["lc"] == 1
+    assert ss["type"] == "secret"
+    assert ss["id"] == ["MY_SECRET"]
+
+
+def test_serialized_not_implemented_typeddict_fields() -> None:
+    """Snapshot: SerializedNotImplemented has the expected fields."""
+    from langchain_core.load.serializable import SerializedNotImplemented
+
+    sni: SerializedNotImplemented = {
+        "lc": 1,
+        "type": "not_implemented",
+        "id": ["mod", "Class"],
+        "repr": "Class()",
+    }
+    assert sni["lc"] == 1
+    assert sni["type"] == "not_implemented"
+    assert sni["id"] == ["mod", "Class"]
+    assert sni["repr"] == "Class()"
+
+
+# ---------------------------------------------------------------------------
+# Snapshot: deprecated attribute lc_serializable
+# ---------------------------------------------------------------------------
+
+
+def test_serializable_deprecated_lc_serializable_attr_error() -> None:
+    """Test to_json raises ValueError when lc_serializable attr exists."""
+
+    class BadModel(Serializable):
+        value: int
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return True
+
+    BadModel.lc_serializable = True  # type: ignore[attr-defined]
+    model = BadModel(value=1)
+    with pytest.raises(ValueError, match="deprecated attribute lc_serializable"):
+        model.to_json()
+
+
+# ---------------------------------------------------------------------------
+# Snapshot: Serializable is_lc_serializable default
+# ---------------------------------------------------------------------------
+
+
+def test_is_lc_serializable_default_false() -> None:
+    """Snapshot: is_lc_serializable() returns False by default."""
+
+    class PlainModel(Serializable):
+        value: int
+
+    assert PlainModel.is_lc_serializable() is False
+
+
+# ---------------------------------------------------------------------------
+# Snapshot: lc_secrets and lc_attributes defaults
+# ---------------------------------------------------------------------------
+
+
+def test_lc_secrets_default_empty() -> None:
+    """Snapshot: lc_secrets returns empty dict by default."""
+
+    class PlainModel(Serializable):
+        value: int
+
+    model = PlainModel(value=1)
+    assert model.lc_secrets == {}
+
+
+def test_lc_attributes_default_empty() -> None:
+    """Snapshot: lc_attributes returns empty dict by default."""
+
+    class PlainModel(Serializable):
+        value: int
+
+    model = PlainModel(value=1)
+    assert model.lc_attributes == {}
+
+
+# ---------------------------------------------------------------------------
+# Snapshot: round-trip serialize/deserialize preserves exact values
+# ---------------------------------------------------------------------------
+
+
+class RichModel(Serializable):
+    name: str
+    count: int
+    tags: list[str]
+    meta: dict[str, int]
+
+    @classmethod
+    def is_lc_serializable(cls) -> bool:
+        return True
+
+
+def test_round_trip_with_various_field_types() -> None:
+    """Snapshot: round-trip with int, str, list, dict fields."""
+    original = RichModel(name="test", count=42, tags=["a", "b"], meta={"x": 1, "y": 2})
+    serialized = dumpd(original)
+    restored = load(serialized, valid_namespaces=["tests"])
+    assert isinstance(restored, RichModel)
+    assert restored.name == "test"
+    assert restored.count == 42
+    assert restored.tags == ["a", "b"]
+    assert restored.meta == {"x": 1, "y": 2}
+
+
+# ---------------------------------------------------------------------------
+# Snapshot: to_json with lc_attributes from multiple inheritance levels
+# ---------------------------------------------------------------------------
+
+
+def test_to_json_lc_attributes_from_parent_and_child() -> None:
+    """Snapshot: lc_attributes merged from parent and child via MRO."""
+
+    class Parent(Serializable):
+        base_val: int
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return True
+
+        @property
+        def lc_attributes(self) -> dict:
+            return {"parent_attr": self.base_val * 10}
+
+    class Child(Parent):
+        child_val: str
+
+        @property
+        def lc_attributes(self) -> dict:
+            return {"child_attr": self.child_val.upper()}
+
+    child = Child(base_val=3, child_val="hi")
+    serialized = child.to_json()
+    assert serialized["kwargs"]["parent_attr"] == 30
+    assert serialized["kwargs"]["child_attr"] == "HI"
