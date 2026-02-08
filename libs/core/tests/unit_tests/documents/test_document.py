@@ -1,4 +1,7 @@
+import pytest
+
 from langchain_core.documents import Document
+from langchain_core.documents.base import BaseMedia
 
 
 def test_init() -> None:
@@ -148,3 +151,169 @@ def test_document_repr_includes_all_fields() -> None:
     assert "Document" in repr_str
     assert "page_content" in repr_str
     assert "metadata" in repr_str
+
+
+def test_document_inherits_from_base_media() -> None:
+    """Test Document is a subclass of BaseMedia."""
+    doc = Document(page_content="test")
+    assert isinstance(doc, BaseMedia)
+
+
+def test_document_pydantic_equality() -> None:
+    """Test pydantic model equality for Documents with same fields."""
+    doc1 = Document(page_content="test", metadata={"a": 1}, id="1")
+    doc2 = Document(page_content="test", metadata={"a": 1}, id="1")
+    assert doc1 == doc2
+
+
+def test_document_pydantic_inequality_different_content() -> None:
+    """Test pydantic model inequality for Documents with different content."""
+    doc1 = Document(page_content="test1", metadata={"a": 1})
+    doc2 = Document(page_content="test2", metadata={"a": 1})
+    assert doc1 != doc2
+
+
+def test_document_pydantic_inequality_different_metadata() -> None:
+    """Test pydantic model inequality for Documents with different metadata."""
+    doc1 = Document(page_content="test", metadata={"a": 1})
+    doc2 = Document(page_content="test", metadata={"a": 2})
+    assert doc1 != doc2
+
+
+def test_document_pydantic_inequality_different_id() -> None:
+    """Test pydantic model inequality for Documents with different id."""
+    doc1 = Document(page_content="test", id="1")
+    doc2 = Document(page_content="test", id="2")
+    assert doc1 != doc2
+
+
+def test_document_str_with_empty_metadata() -> None:
+    """Test __str__ with explicitly empty metadata dict."""
+    doc = Document(page_content="test", metadata={})
+    str_repr = str(doc)
+    # Empty metadata dict is falsy, so __str__ should not include it
+    assert str_repr == "page_content='test'"
+
+
+def test_document_str_with_metadata() -> None:
+    """Test __str__ includes metadata when non-empty."""
+    doc = Document(page_content="test", metadata={"key": "value"})
+    str_repr = str(doc)
+    assert "metadata=" in str_repr
+    assert "key" in str_repr
+
+
+def test_document_str_excludes_type_field() -> None:
+    """Test __str__ does not include the type field."""
+    doc = Document(page_content="test", metadata={"a": 1})
+    str_repr = str(doc)
+    assert "type=" not in str_repr
+
+
+def test_document_page_content_is_mutable() -> None:
+    """Test that Document page_content can be modified (not frozen)."""
+    doc = Document(page_content="original")
+    doc.page_content = "modified"
+    assert doc.page_content == "modified"
+
+
+def test_document_id_is_mutable() -> None:
+    """Test that Document id can be modified."""
+    doc = Document(page_content="test", id="original")
+    doc.id = "modified"
+    assert doc.id == "modified"
+
+
+def test_document_model_copy() -> None:
+    """Test Document model_copy creates independent copy."""
+    doc = Document(page_content="test", metadata={"a": 1}, id="1")
+    copy = doc.model_copy()
+    assert copy == doc
+    assert copy is not doc
+    # Modifying copy's page_content should not affect original
+    copy.page_content = "modified"
+    assert doc.page_content == "test"
+
+
+def test_document_model_copy_with_update() -> None:
+    """Test Document model_copy with update dict."""
+    doc = Document(page_content="test", metadata={"a": 1}, id="1")
+    copy = doc.model_copy(update={"page_content": "updated", "id": "2"})
+    assert copy.page_content == "updated"
+    assert copy.id == "2"
+    assert copy.metadata == {"a": 1}
+    # Original is unchanged
+    assert doc.page_content == "test"
+    assert doc.id == "1"
+
+
+def test_document_model_dump() -> None:
+    """Test Document serialization to dict via model_dump."""
+    doc = Document(page_content="test", metadata={"a": 1}, id="doc-1")
+    data = doc.model_dump()
+    assert data["page_content"] == "test"
+    assert data["metadata"] == {"a": 1}
+    assert data["id"] == "doc-1"
+    assert data["type"] == "Document"
+
+
+def test_document_model_dump_without_optional_fields() -> None:
+    """Test Document model_dump with default optional fields."""
+    doc = Document(page_content="test")
+    data = doc.model_dump()
+    assert data["page_content"] == "test"
+    assert data["metadata"] == {}
+    assert data["id"] is None
+    assert data["type"] == "Document"
+
+
+def test_document_construct_from_model_validate() -> None:
+    """Test Document construction from dict via model_validate."""
+    data = {"page_content": "test", "metadata": {"a": 1}, "id": "1"}
+    doc = Document.model_validate(data)
+    assert doc.page_content == "test"
+    assert doc.metadata == {"a": 1}
+    assert doc.id == "1"
+
+
+def test_document_roundtrip_model_dump_validate() -> None:
+    """Test Document survives model_dump -> model_validate roundtrip."""
+    original = Document(page_content="test", metadata={"a": 1}, id="1")
+    data = original.model_dump()
+    restored = Document.model_validate(data)
+    assert restored == original
+
+
+def test_document_requires_page_content() -> None:
+    """Test that Document requires page_content argument."""
+    with pytest.raises(TypeError):
+        Document()  # type: ignore[call-arg]
+
+
+def test_document_metadata_is_independent_per_instance() -> None:
+    """Test that default metadata dicts are independent between instances."""
+    doc1 = Document(page_content="test1")
+    doc2 = Document(page_content="test2")
+    doc1.metadata["key"] = "value"
+    assert "key" not in doc2.metadata
+
+
+def test_document_very_long_content() -> None:
+    """Test Document with very long page content."""
+    content = "x" * 100_000
+    doc = Document(page_content=content)
+    assert len(doc.page_content) == 100_000
+    assert doc.page_content == content
+
+
+def test_document_whitespace_content() -> None:
+    """Test Document with whitespace-only content."""
+    doc = Document(page_content="   \t\n  ")
+    assert doc.page_content == "   \t\n  "
+
+
+def test_document_id_coercion_large_int() -> None:
+    """Test Document ID coercion with large integer."""
+    doc = Document(page_content="test", id=99999999999999)
+    assert doc.id == "99999999999999"
+    assert isinstance(doc.id, str)

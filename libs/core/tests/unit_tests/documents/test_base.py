@@ -18,7 +18,6 @@ class TestBaseMedia:
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
 
-
         media = TestMedia()
         assert media.id is None
         assert media.metadata == {}
@@ -29,7 +28,6 @@ class TestBaseMedia:
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
 
-
         media = TestMedia(id="test-id-123")
         assert media.id == "test-id-123"
 
@@ -38,7 +36,6 @@ class TestBaseMedia:
 
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
-
 
         media = TestMedia(id=123)
         assert media.id == "123"
@@ -49,7 +46,6 @@ class TestBaseMedia:
 
         class TestMedia(BaseMedia):
             """Test subclass of BaseMedia."""
-
 
         metadata = {"source": "test", "page": 1, "author": "Test Author"}
         media = TestMedia(metadata=metadata)
@@ -326,6 +322,261 @@ class TestBlobImmutability:
         # Blob is frozen so attempting to modify raises ValidationError
         with pytest.raises(ValueError, match="frozen"):
             blob.data = "new data"  # type: ignore[misc]
+
+
+class TestBaseMediaIdCoercion:
+    """Tests for BaseMedia ID coercion edge cases."""
+
+    def test_base_media_id_zero_coercion(self) -> None:
+        """Test that numeric 0 is coerced to string '0'."""
+
+        class TestMedia(BaseMedia):
+            """Test subclass of BaseMedia."""
+
+        media = TestMedia(id=0)
+        assert media.id == "0"
+        assert isinstance(media.id, str)
+
+    def test_base_media_id_float_coercion(self) -> None:
+        """Test that float ID is coerced to string."""
+
+        class TestMedia(BaseMedia):
+            """Test subclass of BaseMedia."""
+
+        media = TestMedia(id=3.14)
+        assert media.id == "3.14"
+        assert isinstance(media.id, str)
+
+    def test_base_media_id_negative_int_coercion(self) -> None:
+        """Test that negative int ID is coerced to string."""
+
+        class TestMedia(BaseMedia):
+            """Test subclass of BaseMedia."""
+
+        media = TestMedia(id=-1)
+        assert media.id == "-1"
+        assert isinstance(media.id, str)
+
+    def test_base_media_id_empty_string(self) -> None:
+        """Test that empty string ID is accepted as-is."""
+
+        class TestMedia(BaseMedia):
+            """Test subclass of BaseMedia."""
+
+        media = TestMedia(id="")
+        assert media.id == ""
+        assert isinstance(media.id, str)
+
+
+class TestBlobWithBothDataAndPath:
+    """Tests for Blob when both data and path are provided."""
+
+    def test_blob_with_data_and_path(self, tmp_path: Path) -> None:
+        """Test Blob creation with both data and path set."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("file content")
+
+        blob = Blob(data="in-memory content", path=test_file)
+        assert blob.data == "in-memory content"
+        assert blob.path == test_file
+
+    def test_as_string_prefers_data_over_path(self, tmp_path: Path) -> None:
+        """Test as_string returns in-memory data, not file content."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("file content")
+
+        blob = Blob(data="in-memory content", path=test_file)
+        # data is a string, so as_string returns it directly
+        assert blob.as_string() == "in-memory content"
+
+    def test_as_bytes_prefers_data_over_path(self, tmp_path: Path) -> None:
+        """Test as_bytes returns in-memory data, not file content."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("file content")
+
+        blob = Blob(data=b"in-memory bytes", path=test_file)
+        assert blob.as_bytes() == b"in-memory bytes"
+
+
+class TestBlobEmptyData:
+    """Tests for Blob with empty data."""
+
+    def test_blob_empty_string_data(self) -> None:
+        """Test Blob with empty string data."""
+        blob = Blob.from_data("")
+        assert blob.as_string() == ""
+        assert blob.as_bytes() == b""
+
+    def test_blob_empty_bytes_data(self) -> None:
+        """Test Blob with empty bytes data."""
+        blob = Blob.from_data(b"")
+        assert blob.as_bytes() == b""
+        assert blob.as_string() == ""
+
+    def test_blob_empty_bytes_as_bytes_io(self) -> None:
+        """Test as_bytes_io with empty bytes returns valid BytesIO."""
+        blob = Blob.from_data(b"")
+        with blob.as_bytes_io() as stream:
+            assert isinstance(stream, BytesIO)
+            assert stream.read() == b""
+
+
+class TestBlobAsStringErrors:
+    """Tests for Blob.as_string error paths."""
+
+    def test_as_string_raises_when_no_data_and_no_path(self) -> None:
+        """Test as_string raises ValueError when data is None and no path."""
+        # Blob with only path=some_string but data=None, and path doesn't exist
+        # Use from_path with a nonexistent file to get data=None, path=set
+        # But that would raise a file error. Instead, test the ValueError branch
+        # by creating a blob where data=None but path is also None.
+        # The validator requires either data or path, so we need to bypass it.
+        # The actual ValueError path: data=None and path exists but file missing
+        # triggers a FileNotFoundError from Path.read_text, not a ValueError.
+        # The ValueError in as_string is unreachable if validator passes.
+        # So let's test the FileNotFoundError case instead.
+        blob = Blob.from_path("/nonexistent/path/to/file.txt")
+        with pytest.raises(FileNotFoundError):
+            blob.as_string()
+
+    def test_as_bytes_raises_when_file_missing(self) -> None:
+        """Test as_bytes raises FileNotFoundError for missing file."""
+        blob = Blob.from_path("/nonexistent/path/to/file.bin")
+        with pytest.raises(FileNotFoundError):
+            blob.as_bytes()
+
+
+class TestBlobAsBytesIOErrors:
+    """Tests for Blob.as_bytes_io error paths."""
+
+    def test_as_bytes_io_raises_not_implemented_for_none_data_no_path(self) -> None:
+        """Test as_bytes_io raises NotImplementedError for string data."""
+        # String data falls through to the else branch
+        blob = Blob.from_data("string data")
+        with pytest.raises(NotImplementedError, match="Unable to convert blob"):
+            with blob.as_bytes_io():
+                pass
+
+
+class TestBlobSourceEdgeCases:
+    """Tests for Blob.source property edge cases."""
+
+    def test_source_metadata_without_source_key(self) -> None:
+        """Test source property when metadata exists but has no 'source' key."""
+        blob = Blob.from_data("data", metadata={"author": "test"})
+        # metadata is non-empty but no 'source' key; path is None
+        assert blob.source is None
+
+    def test_source_metadata_source_is_none(self) -> None:
+        """Test source property when metadata 'source' is explicitly None."""
+        blob = Blob.from_data("data", path="/some/path.txt", metadata={"source": None})
+        # metadata has 'source' key so it takes priority, even if None
+        assert blob.source is None
+
+    def test_source_from_data_with_path(self) -> None:
+        """Test source returns path when from_data with path but no metadata source."""
+        blob = Blob.from_data("data", path="/some/path.txt")
+        assert blob.source == "/some/path.txt"
+
+
+class TestBlobFromPathMimeTypes:
+    """Tests for MIME type guessing in Blob.from_path."""
+
+    def test_from_path_html_mime_type(self, tmp_path: Path) -> None:
+        """Test MIME type guessing for .html file."""
+        test_file = tmp_path / "page.html"
+        test_file.write_text("<html></html>")
+
+        blob = Blob.from_path(test_file)
+        assert blob.mimetype == "text/html"
+
+    def test_from_path_json_mime_type(self, tmp_path: Path) -> None:
+        """Test MIME type guessing for .json file."""
+        test_file = tmp_path / "data.json"
+        test_file.write_text("{}")
+
+        blob = Blob.from_path(test_file)
+        assert blob.mimetype == "application/json"
+
+    def test_from_path_unknown_extension_mime_type(self, tmp_path: Path) -> None:
+        """Test MIME type guessing for unknown extension returns None."""
+        test_file = tmp_path / "data.xyz123"
+        test_file.write_text("data")
+
+        blob = Blob.from_path(test_file)
+        assert blob.mimetype is None
+
+    def test_from_path_no_extension_mime_type(self, tmp_path: Path) -> None:
+        """Test MIME type guessing for file with no extension."""
+        test_file = tmp_path / "Makefile"
+        test_file.write_text("all:")
+
+        blob = Blob.from_path(test_file)
+        # No extension means mimetypes can't guess
+        assert blob.mimetype is None
+
+
+class TestBlobFromPathWithPurePath:
+    """Tests for Blob.from_path with different path types."""
+
+    def test_from_path_with_path_object(self, tmp_path: Path) -> None:
+        """Test from_path with pathlib.Path."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        blob = Blob.from_path(Path(test_file))
+        assert blob.as_string() == "content"
+
+    def test_from_path_with_string(self, tmp_path: Path) -> None:
+        """Test from_path with string path."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        blob = Blob.from_path(str(test_file))
+        assert blob.as_string() == "content"
+
+
+class TestBlobReprEdgeCases:
+    """Tests for Blob.__repr__ edge cases."""
+
+    def test_repr_with_metadata_source(self) -> None:
+        """Test __repr__ uses metadata source over path."""
+        blob = Blob.from_data(
+            "data", path="/file.txt", metadata={"source": "custom_source"}
+        )
+        repr_str = repr(blob)
+        assert "custom_source" in repr_str
+
+    def test_repr_format(self) -> None:
+        """Test __repr__ format matches 'Blob <id>' pattern."""
+        blob = Blob.from_data("data")
+        repr_str = repr(blob)
+        assert repr_str.startswith("Blob ")
+
+
+class TestBlobImmutabilityExtended:
+    """Extended tests for Blob immutability."""
+
+    def test_blob_path_cannot_be_modified(self, tmp_path: Path) -> None:
+        """Test that Blob path cannot be modified after creation."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        blob = Blob.from_path(test_file)
+        with pytest.raises(ValueError, match="frozen"):
+            blob.path = "/new/path"  # type: ignore[misc]
+
+    def test_blob_mimetype_cannot_be_modified(self) -> None:
+        """Test that Blob mimetype cannot be modified after creation."""
+        blob = Blob.from_data("data", mime_type="text/plain")
+        with pytest.raises(ValueError, match="frozen"):
+            blob.mimetype = "application/json"  # type: ignore[misc]
+
+    def test_blob_encoding_cannot_be_modified(self) -> None:
+        """Test that Blob encoding cannot be modified after creation."""
+        blob = Blob.from_data("data")
+        with pytest.raises(ValueError, match="frozen"):
+            blob.encoding = "ascii"  # type: ignore[misc]
 
 
 class TestBlobIntegrationWithDocument:

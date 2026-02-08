@@ -1,9 +1,11 @@
 """Unit tests for BaseDocumentTransformer."""
 
+from abc import ABC
 from collections.abc import Sequence
 from typing import Any, override
 
 import pytest
+from pydantic import BaseModel
 
 from langchain_core.documents import BaseDocumentTransformer, Document
 
@@ -385,3 +387,176 @@ class TestBaseDocumentTransformer:
         result = transformer.transform_documents(docs)
         assert isinstance(result, Sequence)
         assert all(isinstance(doc, Document) for doc in result)
+
+    def test_transformer_is_abc_subclass(self) -> None:
+        """Test that BaseDocumentTransformer is an ABC subclass."""
+        assert issubclass(BaseDocumentTransformer, ABC)
+
+    def test_transformer_is_not_base_model(self) -> None:
+        """Test that BaseDocumentTransformer is NOT a BaseModel subclass."""
+        assert not issubclass(BaseDocumentTransformer, BaseModel)
+
+    def test_transformer_with_empty_input(self) -> None:
+        """Test transformer with empty document list."""
+
+        class PassthroughTransformer(BaseDocumentTransformer):
+            """Transformer that passes through all documents."""
+
+            @override
+            def transform_documents(
+                self, documents: Sequence[Document], **kwargs: Any
+            ) -> Sequence[Document]:
+                """Return documents as-is."""
+                return list(documents)
+
+        transformer = PassthroughTransformer()
+        result = transformer.transform_documents([])
+        assert len(result) == 0
+        assert isinstance(result, list)
+
+    def test_transformer_with_tuple_input(self) -> None:
+        """Test transformer accepts tuple as Sequence input."""
+
+        class PassthroughTransformer(BaseDocumentTransformer):
+            """Transformer that passes through all documents."""
+
+            @override
+            def transform_documents(
+                self, documents: Sequence[Document], **kwargs: Any
+            ) -> Sequence[Document]:
+                """Return documents as-is."""
+                return list(documents)
+
+        transformer = PassthroughTransformer()
+        docs = (
+            Document(page_content="doc1"),
+            Document(page_content="doc2"),
+        )
+        result = transformer.transform_documents(docs)
+        assert len(result) == 2
+        assert result[0].page_content == "doc1"
+
+    def test_transformer_with_no_kwargs(self) -> None:
+        """Test transformer called without any kwargs."""
+
+        class NoKwargsTransformer(BaseDocumentTransformer):
+            """Transformer that checks kwargs are empty."""
+
+            @override
+            def transform_documents(
+                self, documents: Sequence[Document], **kwargs: Any
+            ) -> Sequence[Document]:
+                """Verify no kwargs passed."""
+                assert len(kwargs) == 0
+                return list(documents)
+
+        transformer = NoKwargsTransformer()
+        docs = [Document(page_content="test")]
+        result = transformer.transform_documents(docs)
+        assert len(result) == 1
+
+    def test_transformer_with_multiple_kwargs(self) -> None:
+        """Test transformer with multiple keyword arguments."""
+
+        class MultiKwargsTransformer(BaseDocumentTransformer):
+            """Transformer that uses multiple kwargs."""
+
+            @override
+            def transform_documents(
+                self, documents: Sequence[Document], **kwargs: Any
+            ) -> Sequence[Document]:
+                """Apply prefix and suffix from kwargs."""
+                prefix = kwargs.get("prefix", "")
+                suffix = kwargs.get("suffix", "")
+                return [
+                    Document(
+                        page_content=f"{prefix}{doc.page_content}{suffix}",
+                        metadata=doc.metadata,
+                        id=doc.id,
+                    )
+                    for doc in documents
+                ]
+
+        transformer = MultiKwargsTransformer()
+        docs = [Document(page_content="content")]
+        result = transformer.transform_documents(docs, prefix="[", suffix="]")
+        assert result[0].page_content == "[content]"
+
+    async def test_atransform_documents_with_empty_input(self) -> None:
+        """Test async transform with empty document list."""
+
+        class PassthroughTransformer(BaseDocumentTransformer):
+            """Transformer that passes through all documents."""
+
+            @override
+            def transform_documents(
+                self, documents: Sequence[Document], **kwargs: Any
+            ) -> Sequence[Document]:
+                """Return documents as-is."""
+                return list(documents)
+
+        transformer = PassthroughTransformer()
+        result = await transformer.atransform_documents([])
+        assert len(result) == 0
+
+    def test_transformer_single_document(self) -> None:
+        """Test transformer with a single document."""
+
+        class DoubleTransformer(BaseDocumentTransformer):
+            """Transformer that doubles content."""
+
+            @override
+            def transform_documents(
+                self, documents: Sequence[Document], **kwargs: Any
+            ) -> Sequence[Document]:
+                """Double the page content."""
+                return [
+                    Document(
+                        page_content=doc.page_content * 2,
+                        metadata=doc.metadata,
+                        id=doc.id,
+                    )
+                    for doc in documents
+                ]
+
+        transformer = DoubleTransformer()
+        docs = [Document(page_content="ab", id="1")]
+        result = transformer.transform_documents(docs)
+        assert result[0].page_content == "abab"
+        assert result[0].id == "1"
+
+    def test_transformer_can_produce_more_documents(self) -> None:
+        """Test transformer that produces more documents than input."""
+
+        class DuplicateTransformer(BaseDocumentTransformer):
+            """Transformer that duplicates each document."""
+
+            @override
+            def transform_documents(
+                self, documents: Sequence[Document], **kwargs: Any
+            ) -> Sequence[Document]:
+                """Duplicate each document."""
+                result = []
+                for doc in documents:
+                    result.append(doc)
+                    result.append(
+                        Document(
+                            page_content=doc.page_content,
+                            metadata={**doc.metadata, "copy": True},
+                            id=f"{doc.id}-copy" if doc.id else None,
+                        )
+                    )
+                return result
+
+        transformer = DuplicateTransformer()
+        docs = [
+            Document(page_content="a", id="1"),
+            Document(page_content="b", id="2"),
+        ]
+        result = transformer.transform_documents(docs)
+        assert len(result) == 4
+        assert result[0].id == "1"
+        assert result[1].id == "1-copy"
+        assert result[1].metadata["copy"] is True
+        assert result[2].id == "2"
+        assert result[3].id == "2-copy"

@@ -1,9 +1,11 @@
 """Unit tests for BaseDocumentCompressor."""
 
+from abc import ABC
 from collections.abc import Sequence
 from typing import override
 
 import pytest
+from pydantic import BaseModel
 
 from langchain_core.callbacks import Callbacks
 from langchain_core.documents import BaseDocumentCompressor, Document
@@ -299,3 +301,171 @@ class TestBaseDocumentCompressor:
         result = compressor.compress_documents(docs, query="test")
         assert isinstance(result, Sequence)
         assert all(isinstance(doc, Document) for doc in result)
+
+    def test_compressor_is_base_model_subclass(self) -> None:
+        """Test that BaseDocumentCompressor is a BaseModel subclass."""
+        assert issubclass(BaseDocumentCompressor, BaseModel)
+
+    def test_compressor_is_abc_subclass(self) -> None:
+        """Test that BaseDocumentCompressor is an ABC subclass."""
+        assert issubclass(BaseDocumentCompressor, ABC)
+
+    def test_compressor_with_empty_input(self) -> None:
+        """Test compressor with empty document list."""
+
+        class PassthroughCompressor(BaseDocumentCompressor):
+            """Compressor that passes through all documents."""
+
+            @override
+            def compress_documents(
+                self,
+                documents: Sequence[Document],
+                query: str,
+                callbacks: Callbacks | None = None,
+            ) -> Sequence[Document]:
+                """Return documents as-is."""
+                return list(documents)
+
+        compressor = PassthroughCompressor()
+        result = compressor.compress_documents([], query="test")
+        assert len(result) == 0
+        assert isinstance(result, list)
+
+    def test_compressor_with_empty_query(self) -> None:
+        """Test compressor with empty query string."""
+
+        class PassthroughCompressor(BaseDocumentCompressor):
+            """Compressor that passes through all documents."""
+
+            @override
+            def compress_documents(
+                self,
+                documents: Sequence[Document],
+                query: str,
+                callbacks: Callbacks | None = None,
+            ) -> Sequence[Document]:
+                """Return documents as-is."""
+                return list(documents)
+
+        compressor = PassthroughCompressor()
+        docs = [Document(page_content="test")]
+        result = compressor.compress_documents(docs, query="")
+        assert len(result) == 1
+        assert result[0].page_content == "test"
+
+    def test_compressor_with_tuple_input(self) -> None:
+        """Test compressor accepts tuple as Sequence input."""
+
+        class PassthroughCompressor(BaseDocumentCompressor):
+            """Compressor that passes through all documents."""
+
+            @override
+            def compress_documents(
+                self,
+                documents: Sequence[Document],
+                query: str,
+                callbacks: Callbacks | None = None,
+            ) -> Sequence[Document]:
+                """Return documents as-is."""
+                return list(documents)
+
+        compressor = PassthroughCompressor()
+        docs = (
+            Document(page_content="doc1"),
+            Document(page_content="doc2"),
+        )
+        result = compressor.compress_documents(docs, query="test")
+        assert len(result) == 2
+        assert result[0].page_content == "doc1"
+        assert result[1].page_content == "doc2"
+
+    def test_compressor_modifies_document_content(self) -> None:
+        """Test compressor that modifies document content (e.g., extracting)."""
+
+        class ExtractCompressor(BaseDocumentCompressor):
+            """Compressor that extracts relevant sentences."""
+
+            @override
+            def compress_documents(
+                self,
+                documents: Sequence[Document],
+                query: str,
+                callbacks: Callbacks | None = None,
+            ) -> Sequence[Document]:
+                """Extract sentences containing query term."""
+                result = []
+                for doc in documents:
+                    sentences = doc.page_content.split(". ")
+                    relevant = [s for s in sentences if query.lower() in s.lower()]
+                    if relevant:
+                        result.append(
+                            Document(
+                                page_content=". ".join(relevant),
+                                metadata=doc.metadata,
+                                id=doc.id,
+                            )
+                        )
+                return result
+
+        compressor = ExtractCompressor()
+        docs = [
+            Document(
+                page_content="Python is great. Java is popular. Python is fast.",
+                id="1",
+            ),
+        ]
+        result = compressor.compress_documents(docs, query="python")
+        assert len(result) == 1
+        assert "Python" in result[0].page_content
+        assert "Java" not in result[0].page_content
+        assert result[0].id == "1"
+
+    async def test_acompress_documents_with_empty_input(self) -> None:
+        """Test async compression with empty document list."""
+
+        class PassthroughCompressor(BaseDocumentCompressor):
+            """Compressor that passes through all documents."""
+
+            @override
+            def compress_documents(
+                self,
+                documents: Sequence[Document],
+                query: str,
+                callbacks: Callbacks | None = None,
+            ) -> Sequence[Document]:
+                """Return documents as-is."""
+                return list(documents)
+
+        compressor = PassthroughCompressor()
+        result = await compressor.acompress_documents([], query="test")
+        assert len(result) == 0
+
+    def test_compressor_with_single_document(self) -> None:
+        """Test compressor with a single document input."""
+
+        class ScoreCompressor(BaseDocumentCompressor):
+            """Compressor that adds a score to metadata."""
+
+            @override
+            def compress_documents(
+                self,
+                documents: Sequence[Document],
+                query: str,
+                callbacks: Callbacks | None = None,
+            ) -> Sequence[Document]:
+                """Add relevance score to metadata."""
+                return [
+                    Document(
+                        page_content=doc.page_content,
+                        metadata={**doc.metadata, "score": 0.95},
+                        id=doc.id,
+                    )
+                    for doc in documents
+                ]
+
+        compressor = ScoreCompressor()
+        docs = [Document(page_content="test", metadata={"source": "a"}, id="1")]
+        result = compressor.compress_documents(docs, query="test")
+        assert len(result) == 1
+        assert result[0].metadata["score"] == 0.95
+        assert result[0].metadata["source"] == "a"
