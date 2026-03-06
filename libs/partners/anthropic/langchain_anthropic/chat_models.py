@@ -57,6 +57,7 @@ from langchain_core.utils.utils import _build_model_kwargs
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from typing_extensions import NotRequired, Self, TypedDict
 
+from langchain_anthropic import __version__
 from langchain_anthropic._client_utils import (
     _get_default_async_httpx_client,
     _get_default_httpx_client,
@@ -73,6 +74,8 @@ _message_type_lookups = {
 }
 
 _MODEL_PROFILES = cast(ModelProfileRegistry, _PROFILES)
+
+_USER_AGENT: Final[str] = f"langchain-anthropic/{__version__}"
 
 
 def _get_default_model_profile(model_name: str) -> ModelProfile:
@@ -468,6 +471,12 @@ def _format_messages(
                     if "type" not in block:
                         msg = "Dict content block must have a type key"
                         raise ValueError(msg)
+                    if block["type"] in ("reasoning", "function_call") and (
+                        not isinstance(message, AIMessage)
+                        or message.response_metadata.get("model_provider")
+                        != "anthropic"
+                    ):
+                        continue
                     if block["type"] == "image_url":
                         # convert format
                         source = _format_image(block["image_url"]["url"])
@@ -1021,15 +1030,26 @@ class ChatAnthropic(BaseChatModel):
         """Set model profile if not overridden."""
         if self.profile is None:
             self.profile = _get_default_model_profile(self.model)
+        if (
+            self.profile is not None
+            and self.betas
+            and "context-1m-2025-08-07" in self.betas
+        ):
+            self.profile["max_input_tokens"] = 1_000_000
         return self
 
     @cached_property
     def _client_params(self) -> dict[str, Any]:
+        # Merge User-Agent with user-provided headers (user headers take precedence)
+        default_headers = {"User-Agent": _USER_AGENT}
+        if self.default_headers:
+            default_headers.update(self.default_headers)
+
         client_params: dict[str, Any] = {
             "api_key": self.anthropic_api_key.get_secret_value(),
             "base_url": self.anthropic_api_url,
             "max_retries": self.max_retries,
-            "default_headers": (self.default_headers or None),
+            "default_headers": default_headers,
         }
         # value <= 0 indicates the param should be ignored. None is a meaningful value
         # for Anthropic client and treated differently than not specifying the param at
@@ -1546,6 +1566,26 @@ class ChatAnthropic(BaseChatModel):
             raise ValueError(
                 msg,
             )
+
+        # Anthropic API rejects forced tool use when thinking is enabled:
+        # "Thinking may not be enabled when tool_choice forces tool use."
+        # Drop forced tool_choice and warn, matching the behavior in
+        # _get_llm_for_structured_output_when_thinking_is_enabled.
+        if (
+            self.thinking is not None
+            and self.thinking.get("type") == "enabled"
+            and "tool_choice" in kwargs
+            and kwargs["tool_choice"].get("type") in ("any", "tool")
+        ):
+            warnings.warn(
+                "tool_choice is forced but thinking is enabled. The Anthropic "
+                "API does not support forced tool use with thinking. "
+                "Dropping tool_choice to avoid an API error. Tool calls are "
+                "not guaranteed. Consider disabling thinking or adjusting "
+                "your prompt to ensure the tool is called.",
+                stacklevel=2,
+            )
+            del kwargs["tool_choice"]
 
         if parallel_tool_calls is not None:
             disable_parallel_tool_use = not parallel_tool_calls
