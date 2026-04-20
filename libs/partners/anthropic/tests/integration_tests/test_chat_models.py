@@ -1231,7 +1231,7 @@ def test_image_tool_calling() -> None:
         },
     ]
     image_url = "https://raw.githubusercontent.com/langchain-ai/docs/4d11d08b6b0e210bd456943f7a22febbd168b543/src/images/agentic-rag-output.png"
-    image_data = b64encode(httpx.get(image_url).content).decode("utf-8")
+    image_data = b64encode(httpx.get(image_url, timeout=10.0).content).decode("utf-8")
     human_content.append(
         {
             "type": "image",
@@ -2411,7 +2411,7 @@ def test_fine_grained_tool_streaming() -> None:
 
 @pytest.mark.vcr
 def test_compaction() -> None:
-    """Test the compation beta feature."""
+    """Test the compaction beta feature."""
     llm = ChatAnthropic(
         model="claude-opus-4-6",  # type: ignore[call-arg]
         betas=["compact-2026-01-12"],
@@ -2465,7 +2465,7 @@ def test_compaction() -> None:
 
 @pytest.mark.vcr
 def test_compaction_streaming() -> None:
-    """Test the compation beta feature."""
+    """Test the compaction beta feature."""
     llm = ChatAnthropic(
         model="claude-opus-4-6",  # type: ignore[call-arg]
         betas=["compact-2026-01-12"],
